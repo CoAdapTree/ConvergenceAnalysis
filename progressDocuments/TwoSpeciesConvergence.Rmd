@@ -1,0 +1,244 @@
+---
+title: "Two Way Convergence - pMax approach"
+author: "Tom Booker"
+date: "07/05/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Two Way Convergence
+
+We're interested in quantifying the extent of convergence between pairs of species in the CoAdapTree project. 
+
+We have 3 potential approaches for analysing 2-way convergence:
+
+1. The Null-Z test (the Null-W test, but with WZA scores) (**asymmetric**)
+2. A pMax style approach, what is the larger of the two p-values, is that smaller than you’d expect based on order statistic thinking (**symmetric**)
+3. A contingency table approach, where you ask if the proportion of overlapping hits between two species is larger than you’d expect by chance (**symmetric**)
+
+
+By **symmetric/asymmetric** I'm referring to a test that is dependant on the configuration of species that you put in. The null-W test is **assymetric** because the result depends on which species you put into the test first. 
+
+For the purposes of this document, I'll refer to Species A and Species B. These tests assume that you have some way of ranking 
+
+## 2. A pMax style approach
+
+When using the pMax, we've been working with order statistics, a useful non-parametric statistical tool.
+
+Under the null hypothesis that there is no adaptation in either of the two species, both p-values can be thought of as random draws from a uniform distribution (e.g. ```runif(2)```).
+
+The null distribution for the $k^{th}$ order statistic of $n$ random uniform variables is:
+
+$U(k) \sim Beta(k, n+1-k)$.
+
+So, for two p-values from a pair of species we can use:
+```pbeta(max(c(p_1, p_2)), shape1 = 2, shape2 = 2 + 1 - 2)```to calculate the probability (p-value) of the observation.
+
+Here are some examples where 1 of the species had a really striking result (p = 0.0001):
+
+```{r Beta_examples, echo=FALSE}
+p_1 = 0.0001 ## p-value for species 2
+p_2 = 0.05 ## p-value for species 2
+pbeta(max( c(p_1, p_2) ), shape1 = 2, shape2 = 2 + 1 - 2 )
+
+p_1 = 0.0001 
+p_2 = 0.1
+pbeta(max( c(p_1, p_2) ), shape1 = 2, shape2 = 2 + 1 - 2 )
+
+p_1 = 0.0001 
+p_2 = 0.2
+pbeta(max( c(p_1, p_2) ), shape1 = 2, shape2 = 2 + 1 - 2 )
+
+p_1 = 0.0001 
+p_2 = 0.3
+pbeta(max( c(p_1, p_2) ), shape1 = 2, shape2 = 2 + 1 - 2 )
+
+p_1 = 0.01 
+p_2 = 0.99
+pbeta(max( c(p_1, p_2) ), shape1 = 2, shape2 = 2 + 1 - 2 )
+```
+
+Now, let's think about doing that across the entire genome. Let's say for the sake of simplicity that there are 20,000 orthogroups and that they are all 1:1.
+
+Let's simulate empirical p-values for 20,000 genes 
+```{R sampleTwoWay,  fig.show="hold", out.width="50%"}
+## Generate some p-values under the null for two species
+twoSpeciesData <- cbind( sample(20000)/20000,
+                        sample(20000)/20000)
+
+## Plot the distribution of order stats.
+hist(apply(twoSpeciesData, 1,  function(x) max(x)),
+     main = "Histogram of the 2nd order statistic for uniform random variables", xlab = "Order Statistic" )
+## Plot the null distribution of order stats
+hist( rbeta( 20000, shape1 = 2, shape2 = 2 + 1 - 2),
+      main = expression("Histogram of Beta distribution with "*alpha*" = 2, "*beta*" = 2"),
+      xlab = "Order Statistic")
+
+```
+I'd say those look pretty similar, that's a good sanity check.
+
+Now let's calculate the p-values from our order stats and plot those (we expect a nuce uniform distribution)
+
+```{R plot_Pvalues}
+
+pValues <- apply(twoSpeciesData, 1,  function(x) pbeta(max(x), shape1 = 2, shape2 = 2 + 1 - 2))
+hist( pValues,
+      main = "p-values for the 2nd order statistic",
+      xlab = "p-value")
+```
+Looks good, let's move on.
+
+How are we going to handle these? We could just look at the number of genes with p less than some value, but there are LOTS of comparisons here so we'll need to do some kind of FDR correction.
+
+For starters, let's plot the above distribution as q-values instead of p-values:
+
+```{R plot_Qvalues,  fig.show="hold", out.width="50%"}
+library( qvalue ) ## Use the q-value package
+qValues <- qvalue(pValues) 
+
+hist( qValues)
+hist( qValues$qvalues,
+      main = "q-values for the 2nd order statistic",
+      xlab = "q-value")
+
+```
+
+Groovy. 
+
+The q-values from the order stats are well behaved and conform to the null expectation.
+
+Mike suggested a neat way to calculate the number of genes with convergence using the q-values. The q-value is an estimate of the probability that the null is true. That's why you see a lot of numbers piling up close to 1 in this null dataset. If you take the complement of a q-value you have the probability that the null is false. So across the genome, if we take ```sum( 1 - q_value )``` we have an estiamte of how many genes have false nulls. Let's take a look at that in practice.
+
+For the above dataset we have
+``` {R sum_Qvalues_demo}
+
+sum(1-qValues$qvalues) 
+
+```
+
+Ok, so what does this look like after a bunch of random trials? Let's repeat the above 1000 times and plot the results
+
+``` {R sum_Qvalues}
+
+nullGenomeSimulator_pMax <- function( nGenes = 20000 ){
+    twoSpeciesData <- cbind( sample(nGenes)/nGenes,
+                              sample(nGenes)/nGenes)
+
+    pValues <- apply(twoSpeciesData, 1,  function(x) pbeta(max(x), shape1 = 2, shape2 = 2 + 1 - 2))
+
+    qValues <- qvalue(pValues) 
+
+    sum(1-qValues$qvalues) 
+}
+
+null_pMax <- replicate( 1000, nullGenomeSimulator_pMax() )
+
+hist( null_pMax ,
+          main = "Distribution of the number of 2-way convergent genes under the null",
+      xlab = "Number of 2-way hits")
+
+# Mean 
+mean(null_pMax)
+# Median 
+median(null_pMax)
+# Quantiles
+quantile(null_pMax)
+# 95th Percentile
+quantile(null_pMax, 0.95)
+
+```
+
+### pMax approach when there are false nulls
+
+I guess that we'll have the same issue with this 2-species pMax approach where a strongly significant hit in onw species can make it look like there's convergence. 
+
+First let's define some functions:
+
+``` {r SimulateQuasiRealisticData}
+
+## Simulate correlations under 
+simulateCorrelation_empirical <- function(r, n = 100, genes = 20000){
+  # r is the population correlation coefficient 
+  # x1 is the sample data
+  x1 = rnorm(n)
+  # x2 is the data that will be transformed so as to be correlated with x1
+  x2 = rnorm(n)
+  
+  Y = r*x1+sqrt(1-r*r)*x2     
+  empricial_p <- rank( c( cor.test(Y, x1)$p.value, runif(genes-1) ) )[1]/genes
+  return( empricial_p )
+}
+
+## Now make the function run in a vectorised fashion 
+simulateCorrelationVectorized_empirical <- Vectorize(simulateCorrelation_empirical)
+
+# Here's a function to simulate GEA data for X species
+simulateMultipleGEAs <- function(corVector, times, empirical = F){
+  # t is for transpose
+  if (empirical==F){
+      t(replicate(times,  simulateCorrelationVectorized_parametric(corVector, n = 40) )  )
+  }
+  else if (empirical == T){
+          t(replicate(times,  simulateCorrelationVectorized_empirical(corVector, n = 40) )  )
+  }
+}
+```
+
+
+Now let's plot the p-value distribution when some number of genes have false nulls
+
+```{R example_1Way}
+## For example, here is a set of pValues for 10 genes where 1 species has a false null and the other is true
+simulateMultipleGEAs(c(0.4, 0.0), # This is the vector of true correlation coefficients 
+                     10,  # This is the number of genes
+                     empirical = T) # This tells the function to give empirical P-values
+```
+
+Let's now do that for 20000 genes and apply the pMax procedure
+
+```{R plot_1_False_null}
+
+oneFalseNull <- simulateMultipleGEAs(c(0.4, 0.0), 20000, empirical = T)
+
+
+pValues_oneFalseNull <- apply(oneFalseNull, 1,  function(x) pbeta(max(x), shape1 = 2, shape2 = 2 + 1 - 2))
+
+hist(pValues_oneFalseNull)
+
+qValues_oneFalseNull <- qvalue(pValues_oneFalseNull) 
+
+hist(qValues_oneFalseNull)
+
+sum(1-qValues_oneFalseNull$qvalues) 
+
+
+```
+Pretty fudged up by the one-way hits.
+
+Now I'll do a case with 2 false nulls for 1000 genes and true nulls for the rest
+```{R plot_2_False_null}
+
+twoFalseNull_0.4_hits <- simulateMultipleGEAs(c(0.4, 0.4), 1000, empirical = T)
+
+twoFalseNull_0.4_misses <- cbind( sample(20000, 19000)/20000,
+                              sample(20000, 19000)/20000)
+
+twoFalseNull_0.4 <- rbind( twoFalseNull_0.4_hits,
+                           twoFalseNull_0.4_misses)
+
+pValues_twoFalseNull_0.4 <- apply(twoFalseNull_0.4, 1,  function(x) pbeta(max(x), shape1 = 2, shape2 = 2 + 1 - 2))
+
+hist(pValues_twoFalseNull_0.4)
+
+qValues_twoFalseNull_0.4 <- qvalue(pValues_twoFalseNull_0.4) 
+
+hist(qValues_twoFalseNull_0.4)
+
+sum(1-qValues_twoFalseNull_0.4$qvalues) 
+
+sum(1-qValues_twoFalseNull_0.4$qvalues) 
+
+```

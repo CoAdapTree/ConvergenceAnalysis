@@ -1,0 +1,394 @@
+---
+title: "Convergence Analysis"
+author: "Tom Booker"
+date: "28/05/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Convergence analysis for CoAdapTree project
+
+In this R Markdown I'll outline the analyses that we have developed for the analysis of the CoAdapTree datasets.
+
+I'll start by outlining the analyses for the multi-species comparison and then detail the analysis for pairs of species. 
+
+#### A brief description of the data that we'll analyse:
+
+After a whole lot of analysis, the CoAdapTree datasets will result in a set of WZA scores for each gene in the genomes of each of the conifer species that we are working with. We'll take those data and combine information across genes. For the purpose of this document, I'm not going to worry about orthogroups. Dealing with orthogroups will of course decrease power, so it might make the results outlined here a little optimistic, but probably won't increase the false positive rate. 
+
+For each of the species for which we have data, we'll have a single WZA score for each orthogroup. We will convert those to empirical p-values (i.e. ranks). So we'll have a table with rows corresponding to orthogroups and columns corresponding to species. 
+
+# A statistical test for multi-species convergence
+
+Here's the outline of the multi-species test:
+
+1. **For each gene, we ask whether there is evidence of adaptation using this gene in any species in the list.**
+    *This will be done with a Dunn-SIdak-corrected p value based on the list of p-values from each species for that gene.*
+
+2. **Create a "culled list" of genes for which the *p*-value for the test of adaptation in step 1 is less than $\alpha$~1~.**
+
+3. **For each gene in the culled list, remove the smallest p-value (i.e. the one that caused it to be flagged for adaptation).  Of the remaining *n* - 1 species, use Pmax based on k= 1 to n-1.**
+
+### What is **Pmax**?
+
+
+Let's say we have a set of 5 species. If the smallest *p*-value from those 5 is significant (at whatever $\alpha$ you care to choose), then there are obviously 4 remaining. Under the null hypothesis that there is adaptation in only one lineage (i.e. no convergence) , the remaining 4 represent draws from the null distribution. In the case of p-values, the null distribution is the uniform distribution. 
+
+If we order the set of 4 *p*-values, we have a set of 4 order statistics. The null distribution of order statistics is a beta distribution, with parameters $k$ and $n + 1 - k$ corresponding to the $a$ and $b$ parameters.  The fourth order statistic, of four, for example, is distributed as $Beta( 4, 4 + 1 - 4) 
+
+For example:
+```{r}
+hist(rbeta(10000, 5, 5 + 1 - 5),
+     main = "The distribution of the fifth order statistic (of five)",
+     xlab = expression(italic("p")*"-value"))
+```
+If the fourth *p*-value, of four, were significantly smaller than you would expect based on this null distribution, obviously it implies that the other 3 p-values are small too. We apply the same logic to the 3, 2 and 1 other *p*-values. If any of the remaining 4 *p*-values are smaller than you would expect based on the null distribution for order statistics, then we have evidence of convergence for that gene.
+
+The PMax test is a test that we came up with for working with these data. It works like this:
+
+1. Calculate the probability of seeing the 4th, 3rd, 2nd and 1st order statistics. 
+2. Take the minimum of the list and correct for multiple comparisons
+3. Test whether that *p*-value is smaller than you would expect by chance. 
+
+We rescale the p-value for the 3rd order order statistic after looking at the 4th, and rescale the 2nd after looking at the 3rd to deal with non-independence.
+
+### Here's code for implementing the PMax test into a test for multi-species convergence:
+
+```{r}
+
+p_value_adjustment <- function(p_vec){
+  p_adj = 1 - (1 - min(p_vec))^length(p_vec)
+  return(p_adj)
+}
+
+
+p_jth <- function(plist,j) {
+  # get the list of the p-value vector
+  k=length(plist)
+  # return an NA if the j parameter is bigger than the length of the p vector
+  if(j>k) {return(NA)}
+  # sort the p-values
+  pjth=sort(plist)[j]
+  # scale the probabilities 
+  prob = if(j<k) (pjth /sort(plist)[j+1]) else max(plist)
+  # perform the test
+  dbinom(x = j, size = j, prob=prob ) 
+}
+
+pMax <- function(pVec){
+  outVec <- rep(1, length(pVec))
+  for (r in 1:length(pVec)){
+    outVec[r] =  p_jth(pVec, r)
+  }
+  return(outVec)
+}
+
+MultiSpeciesConvergence <- function(plist, alpha1=.05){
+# plist is the set of p-values that you are analying
+# alpha1 is the significance threshold for determining whether there is adaptation in at least 1 species
+  
+# sort the p-values
+  sortP = sort(plist)
+# get the number of p-values
+  n=length(plist)
+# remove the first p-value to make the list of order statistics to test
+  otherPlist =sortP[-1]
+# test if there is adaptation in the species with the smallest p - Dunn-Sidak corrected
+  adaptation=sortP[1] < 1-(1-alpha1)^(1/n)
+# IF there is at least one hit in the set of 5 p-values run Pmax
+#  ELSE return NA
+    if(adaptation) p_value_adjustment(pMax(otherPlist)) else NA
+}
+```
+
+For example, if we had 5 species with a pattern of p-values like:
+  Species 1, p = 0.01
+  Species 2, p = 0.05
+  Species 3, p = 0.13 
+  Species 4, p = 0.5
+  Species 5, p = 0.8
+```{r}
+MultiSpeciesConvergence( c( 0.01,0.05,0.13,0.5,0.8))
+```
+Not strong evidence for convergent evolution
+
+However, if we had 5 species with a pattern of p-values like:
+  Species 1, p = 0.01
+  Species 2, p = 0.05
+  Species 3, p = 0.06 
+  Species 4, p = 0.10
+  Species 5, p = 0.8
+```{r}
+MultiSpeciesConvergence( c( 0.005,0.01,0.06,0.10,0.8))
+```
+A significant hit for convergence
+
+# The nasty 1-hit problem
+
+Earlier in development, we were having an issue where genes where 1 species had a significant hit were causing us lots of false positives. That's why we've oriented the test around the "culled" set of genes.
+
+## Let's test to see if that 1-hit situation is still causing us grief:
+
+### Let's generated fake data sets
+
+When the null hypothesis (for a gene in a species) is true, the p values have a uniform dist (0,1)
+
+Let's assume that when the null hypothesis (for adaptation for a gene in a species) is false, the p-values have an exponenital dsitrbution.  If we use a mean of 0.05 for this distribution, it results in a 63% power with $\alpha$~1~ = 0.05.
+
+```{r}
+pexp(.05,rate =1/.05)
+```
+
+Here's a function for simulating a multi-species comparison with n species and x false nulls:
+
+```{r}
+plistMaker=function(nSpecies,x, meanPforFalseNull=0.05){
+  c(rexp(n=x, rate=1/meanPforFalseNull),runif(n=nSpecies-x))
+}
+```
+
+Cool, let's generate some data, plug it into our function and plot out the result. It should have a happy uniform distribution of p-values:
+```{r}
+hist( 
+  replicate(100000, 
+            MultiSpeciesConvergence(plistMaker(5,1))
+            ),
+  main= "Distribution of p-values from the multi-species test for convergence"
+  )
+```
+Thank heavens. There is a bit of a bump, so there may be a slight enrichment for small p-values, but it's not nearly so bad as it was.
+
+Let's do it again, but let's make the true positive extremely overpowered:
+```{r}
+hist( 
+  replicate(10000, 
+            MultiSpeciesConvergence(plistMaker(5,1, meanPforFalseNull = 0.00001))
+            ),
+    main= "Distribution of p-values from the multi-species test for convergence"
+
+  )
+```
+
+Phew!
+
+## Now with 2-hits
+
+Now let's look at how powerful the test is when there some convergence. 
+
+First, what about when there is 2-way convergence, making the GEA test for each species have a power of around 63% power with $\alpha$~1~ = 0.05.
+
+```{r}
+two_way_hits <- replicate(10000, MultiSpeciesConvergence(plistMaker(4,2, meanPforFalseNull = 0.05)))
+
+hist( 
+   two_way_hits,
+            
+    main= "Distribution of p-values from the multi-species test for convergence"
+
+  )
+sum(na.omit(two_way_hits) < 0.05)/length(na.omit(two_way_hits))
+```
+So about 22%, not great...
+
+## What about 3-way?
+
+```{r}
+three_way_hits <- replicate(10000,MultiSpeciesConvergence(plistMaker(4,3, meanPforFalseNull = 0.05)))
+
+hist( 
+   three_way_hits,
+    main= "Distribution of p-values from the multi-species test for convergence"
+  )
+sum(na.omit(three_way_hits) < 0.05)/length(na.omit(three_way_hits))
+```
+
+So about 69%, not bad...
+
+## And for 4-way:
+
+```{r}
+four_way_hits <- replicate(10000,MultiSpeciesConvergence(plistMaker(4,4, meanPforFalseNull = 0.05)))
+
+hist( 
+   four_way_hits,
+    main= "Distribution of p-values from the multi-species test for convergence"
+  )
+sum(na.omit(four_way_hits) < 0.05)/length(na.omit(four_way_hits))
+```
+
+Close to 100% power, pretty decent. And remember, that this is assuming a pretty underpowered GEA test. with only 63% power of getting something under 0.05. 
+
+Now let's do a whole bunch of replicates and plot out the power:
+```{r runLots, warning=FALSE}
+
+GEA_power <- c( 1:10/1000, 1:10/100, 1:5/10)
+
+power_results <- list()
+
+## And for 4-way:
+for (p in seq(length(GEA_power))){
+  
+  no_way <- replicate(10000,MultiSpeciesConvergence(plistMaker(5,0, meanPforFalseNull = GEA_power[p])))
+  one_way <- replicate(10000,MultiSpeciesConvergence(plistMaker(5,1, meanPforFalseNull = GEA_power[p])))
+  two_way <- replicate(10000,MultiSpeciesConvergence(plistMaker(5,2, meanPforFalseNull = GEA_power[p])))
+  three_way <- replicate(10000,MultiSpeciesConvergence(plistMaker(5,3, meanPforFalseNull = GEA_power[p])))
+  four_way <- replicate(10000,MultiSpeciesConvergence(plistMaker(5,4, meanPforFalseNull = GEA_power[p])))
+  five_way <- replicate(10000,MultiSpeciesConvergence(plistMaker(5,5, meanPforFalseNull = GEA_power[p])))
+
+  no_way_power <- sum(na.omit(no_way) < 0.05)/length(na.omit(no_way))
+ one_way_power <- sum(na.omit(one_way) < 0.05)/length(na.omit(one_way))
+two_way_power <- sum(na.omit(two_way) < 0.05)/length(na.omit(two_way))
+  three_way_power <- sum(na.omit(three_way) < 0.05)/length(na.omit(three_way))
+  four_way_power <- sum(na.omit(four_way) < 0.05)/length(na.omit(four_way))
+  five_way_power <- sum(na.omit(five_way) < 0.05)/length(na.omit(five_way))
+  
+  loop_results <- c(pexp(.05,rate =1/GEA_power[p]),
+    no_way_power,
+    one_way_power,
+    two_way_power,
+    three_way_power,
+    four_way_power,
+    five_way_power)
+  power_results[[p]] <- loop_results
+  }
+
+outputData <- data.frame(do.call(rbind, power_results))
+names(outputData) <- c("GEA_power", 
+                       "no_hits",
+                       "one_hits",
+                       "two_hits",
+                       "three_hits",
+                       "four_hits",
+                       "five_hits")
+
+```
+
+Now plot the result:
+
+```{r}
+
+
+library(ggplot2)
+library(reshape2)
+melt_results <- melt(outputData, id = "GEA_power")
+ggplot(data = melt_results,
+       aes(x = GEA_power,
+           y = value,
+           col = variable))+
+  geom_line()+
+  scale_y_continuous("pMax Power")+
+  scale_x_continuous(expression("GEA Power ("*alpha*" <= 0.05"))+
+  theme_bw()
+  
+
+```
+
+
+So it looks as if we are doing Ok on the multi-species, when we have 3 or more species. The power for the 2-species convergence is pretty much rubbish.
+
+
+
+## Two-species Convergence
+
+```{r}
+
+rescale_upper_p <- function(pVals){
+  if (pVals[1] > pVals[2]){
+    return(NA)
+  }
+   (1 -  (1- pVals[2])/(1- pVals[1]))
+}
+
+nullZ <- function(pList, alpha1 = 0.01, alpha2 = 0.05){
+  stopifnot(alpha1 < alpha2)
+  if (length(pList) != 2){return(NA)}
+ 
+  sorted_list <- sort(pList) 
+
+  if (sorted_list[1] >alpha1){return(NA)}
+  else{
+    return(sorted_list[2] <= alpha2)
+  }
+ }
+
+temp_2_way <- plistMaker(2,2, meanPforFalseNull=0.05)
+temp_2_way
+nullZ(temp_2_way, alpha1= 0.01, alpha2 = 0.05)
+```
+
+So that's how the nullZ test works.
+
+Let's try it on some simulated data. Let's say that there 100 convergent things, 100 idiosyncratic things in each species and 20,000 genes total
+
+```{r}
+
+
+#GEA_power <- c( 1:10/1000, 1:10/100, 1:5/10)
+
+power_results_2 <- list()
+
+for (p in seq(length(GEA_power))){
+  
+  two_way_data <- rbind( 
+  # Convergent genes
+    t(rbind(replicate(100, plistMaker(2,2, meanPforFalseNull=GEA_power[p]))) ),
+# Idiosyncratic genes
+    t(rbind(replicate(200, plistMaker(2,1, meanPforFalseNull=GEA_power[p]))) ),
+# Neutral genes
+    t(rbind(replicate(17000, plistMaker(2,0, meanPforFalseNull=GEA_power[p]))) ) 
+  )
+
+## Shuffle row-wise - this only effects the placement of the idiosyncratic genes
+  two_way_result <- two_way_data[,sample(ncol(two_way_data))]
+  
+  result <- apply(two_way_result, 1, nullZ)
+
+  numConverged <- sum( na.omit( result ) )
+  
+  loop_results <- c(pexp(.05,rate =1/GEA_power[p]),
+                    numConverged)
+  
+  power_results_2[[p]] <- loop_results
+
+}
+
+
+outputData_twoWay <- data.frame(do.call(rbind, power_results_2))
+names(outputData_twoWay) <- c("GEA_power", 
+                       "convergenceEstimate")
+
+
+```
+
+With this two way test, the null expectation for the overlap when you have 20000 genes is easily calculated as:
+```{r}
+alpha1 = 0.05
+alpha2 = 0.01
+2*alpha1*alpha2*20000
+```
+
+But there will be Poisson variation around that, so let's use the 95th percentage point of the Poisson distribution to see if there is significant enrichment:
+
+```{r}
+qpois(.95, 2*alpha1*alpha2*20000)
+```
+
+The following plot shows the result of the two way analysis setting $\alpha_1 = 0.01$ and $\alpha_2 = 0.05$.
+
+```{r}
+ggplot(data = outputData_twoWay, 
+       aes(x= GEA_power,
+           y = convergenceEstimate))+
+  geom_line()+
+  geom_hline( aes( yintercept= qpois(.95, 2*alpha1*alpha2*20000)), lty = 2)+
+  geom_hline( aes( yintercept= 100 +  qpois(.5, 2*alpha1*alpha2*20000)), lty = 3, col = "red")+
+  scale_y_continuous("Estimated number of convergent genes")+
+  scale_x_continuous(expression("GEA Power ("*alpha*" <= 0.05)"))+
+  theme_bw()
+
+```
+
+You can see that the two-way test has higher power than the pMax performed for 2 lineages. 

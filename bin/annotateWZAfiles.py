@@ -36,8 +36,8 @@ def main():
 # This dict stores the position index of each species in the annotation file
 	species_index = {}
 ## It is assumed that the annotation file has the following structure:
-
-	species_list = [ "Pi" ]
+Df	Is	Pa	Pi
+	species_list = [ "Pi" , "Is", "Pa", "Pi"]
 ## Orthogroup_name     species_1      species_2      species_3      ... species_k
 
 	for focal_species in species_list:
@@ -97,7 +97,7 @@ def main():
 		OG_dict[row['gene']] = OG
 	
 	## Now map the OG_dict to the WZA file using pandas
-	wza_csv["OG"] = wza_csv["gene"].map(OG_dict)
+	wza_csv["orthogroup"] = wza_csv["gene"].map(OG_dict)
 	
 	wza_csv.to_csv( args.output , index = False, sep = "\t")
 main()

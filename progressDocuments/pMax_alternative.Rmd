@@ -1,0 +1,115 @@
+---
+title: "pMax_alternatives"
+author: "Tom Booker"
+date: "16/12/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+rm(list = ls() )
+
+Here I'll try and put the idea I had for a convergence statistic into practice
+
+In this test, you'd have a p-value for each ortholog from each of k species. 
+
+So you'll have a vector of k pVals for each gene.
+
+We structure the statistic like this:
+
+  Rank the pVals from lowest to highest
+    Starting from, the highest ask, what is the prob. that you'd see k-1 values lower than p[k]
+    That's binomial -- pbinom(k-1, k-1, p[k])
+    For the second highest p, it'd be pbinom(k-2, k-2, p[k-1]). However, we're only looking at values that are lower than p[k] so we'd need to condition the probabilities on the fact that we're now looking for things over a constrained range.
+
+```{r}
+## For example, with 4 species you might have a case like this.  
+vec <- c(0.001,0.02,0.03,0.4)
+## The prob of getting 4 values less than 0.4 is:
+dbinom(4,4,0.4)
+## The prob of getting 3 values less than 0.03 is:
+dbinom(3,3,0.03)
+## However, we are constrained by the fact that we are only looking at things in the range 0 - 0.4, so we need to correct for that.
+## If we are looking at pVals in the range [0, 1], then the probability of getting a value less than some threhsold is simply the threshold. If we are looking at values in the range [ 0, 0.5 ], the probaiblity of a random draw falling below 0.1 is 0.1/0.5 =0.2. We need to adjust the probability accordingly... 
+dbinom(3,3,0.03/0.4)
+
+## The prob of getting 2 values less than or equal to 0.02 is 
+dbinom(2,2,0.02/0.03)
+
+## So for the vector "vec"
+## The statistic would be somwthing like this, so that small probabilities contribute more than big ones
+-log(dbinom(4,4,0.4)) + -log(dbinom(3,3,0.03/0.4)) + -log(dbinom(2,2,0.02/0.03))
+
+# A generic for this could be something like:
+
+pMax2 <- function(probValues_raw){
+  pValues = sort(probValues_raw, decreasing  = TRUE)
+  k = length(pValues)
+  k_vec = k:2
+  probVec = pValues[1:(k-1)]/c(1,pValues[1:(k-2)]) 
+  ## dbinom is nicely vectorised, so we can do it all in one go instead of a loop
+  prod(dbinom(k_vec, k_vec, probVec))
+}
+pMax2(vec)
+```
+
+Ok, now let's apply this to some different data fake cases
+
+```{r}
+## Here're some typical non-interesting cases - random pValues
+pop1 <- runif(10000)
+pop2 <- runif(10000)
+pop3 <- runif(10000)
+pop4 <- runif(10000)
+pop5 <- runif(10000)
+pop6 <- runif(10000)
+pop7 <- runif(10000)
+
+M <- as.matrix( cbind(pop1,pop2,pop3, pop4, pop5, pop6 , pop7))
+
+## Here's the matrix of random pValues
+head(M)
+
+## Now let's apply this new test to them and examine the distribution of the resulting logLikelihoods
+results <- apply ( M, 1, function(x) pMax2(x))
+
+hist(results, breaks  = 100)
+
+```
+
+```{r}
+
+
+hist(results, breaks  = 100,xlim = c(0,1))
+
+# Here's a case with very strong convergence between 2 genes
+test_1 <- c(c(0.0001,0.0002),runif(5))
+abline(v = pMax2(test_1), col = "green", lty = 2,lwd = 2)
+
+# Here's a case with strong convergence between 4 genes
+test_2 <- c(c(0.0001,0.005, 0.0034,0.01),runif(3))
+abline(v = pMax2(test_2), col = "red", lty = 2,lwd = 2)
+
+# Here's a case with mild convergence between 2 genes
+test_3 <- c(c(0.01,0.05),runif(5))
+abline(v = pMax2(test_3), col = "blue", lty = 2,lwd = 2)
+
+# Here's a case with mild convergence between all genes
+test_4 <- c(0.01,0.05, 0.02,0.01,0.2, 0.15, 0.09)
+abline(v = pMax2(test_4), col = "purple", lty = 2,lwd = 2)
+
+
+```
+
+Likelihood ratio tests are assumed to have a chiSq distribution. The distribution kind of looks like it's chiSq dist. However, as it is, the test statistic is a likelihood, not a likelihood ratio. We could do the proper LRT if we had a good idea what the null hypothesis was.
+
+I haven't thought through what the null hypothesis is for this test. I guess it could be pMax2(rep(0.5, k)), that each gene is a uniform draw, so there'd be a 50/50 chance each time. 
+
+```{r}
+mean(results)
+pMax2(rep(0.5,7))
+```
+However, the mean of the random distribution should be pretty close to themean of the random dist, I'd have thought. 

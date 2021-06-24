@@ -1,0 +1,223 @@
+---
+title: "Conifer Maps"
+author: "Tom Booker"
+date: "22/06/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Conifer Maps
+
+In this R Markdown I'm going to try and make a nice figure for the conifer convergence study that shows the ranges of each the different conifer species as well as the phylogeny connecting them.
+
+## Plot the phylogeny
+
+The first thing I'm going to do is to plot the phylogeny of the conifers being analysed in the study.
+
+I downloaded a time resolved phylogeny from TimeTree (http://www.timetree.org/). TimeTree is a great tool, but the dates are sometimes a bit iffy. 
+
+I've used this blog as a jumping off point: http://blog.phytools.org/2013/07/
+
+
+```{r initialPhylo}
+library(phytools)
+library(mapdata)
+
+tree<-pbtree(n=26,scale=100)
+tree$tip.label<-LETTERS[26:1]
+lat<-fastBM(tree,sig2=10,bounds=c(-36,-16),a=-20)
+long<-fastBM(tree,sig2=80,bounds=c(115,150),a=130)
+# now plot projection
+phylo.to.map(tree,cbind(lat,long),ylim=c(-40,-10), xlim=c(110,155))
+?phylo.to.map
+```
+
+
+
+```{r read_NA_mapData}
+library(rgdal)
+??readOGR
+
+coastal_DF <- readOGR("~/UBC/GEA/Convergence/SpeciesMaps/ranges/shapefiles/Coastal_DF.shp")   #layer of data for species rangecolumn of "lon" with GPS points in decimal degrees
+interior_DF <- readOGR("~/UBC/GEA/Convergence/SpeciesMaps/ranges/shapefiles/Interior_DF.shp")   #layer of data for species rangecolumn of "lon" with GPS points in decimal degrees
+jack_pine <- readOGR("~/UBC/GEA/Convergence/SpeciesMaps/ranges/shapefiles/jackpine.shp")   #layer of data for species rangecolumn of "lon" with GPS points in decimal degrees
+lodgepole_pine <- readOGR("~/UBC/GEA/Convergence/SpeciesMaps/ranges/shapefiles/pinucont.shp")   #layer of data for species rangecolumn of "lon" with GPS points in decimal degrees
+interior_spruce  <- readOGR("~/UBC/GEA/Convergence/SpeciesMaps/ranges/shapefiles/piceglau.shp")   #layer of data for species rangecolumn of "lon" with GPS points in decimal degrees
+western_larch <- readOGR("~/UBC/GEA/Convergence/SpeciesMaps/ranges/shapefiles/larch_gis/lariocci.shp")   #layer of data for species rangecolumn of "lon" with GPS points in decimal degrees
+
+western_larch <- readOGR("~/UBC/GEA/Convergence/SpeciesMaps/ranges/shapefiles/larch_gis/lariocci.shp")   #layer of data for species rangecolumn of "lon" with GPS points in decimal degrees
+
+
+coastal_DF_samples <- read.csv("~/UBC/GEA/Convergence/SpeciesMaps/sampleLocations/DFC_worldclim_1970-2010.txt", sep = "\t")
+interior_DF_samples <- read.csv("~/UBC/GEA/Convergence/SpeciesMaps/sampleLocations/DFI_worldclim_1970-2010.txt", sep = "\t")
+jack_pine_samples <- read.csv("~/UBC/GEA/Convergence/SpeciesMaps/sampleLocations/jp_worldclim_1970-2010.txt", sep = "\t")
+lodgepole_pine_samples <- read.csv("~/UBC/GEA/Convergence/SpeciesMaps/sampleLocations/lp_worldclim_1970-2010.txt", sep = "\t")
+interior_spruce_samples <- read.csv("~/UBC/GEA/Convergence/SpeciesMaps/sampleLocations/is_worldclim_1970-2010.txt", sep = "\t")
+western_larch_samples <- read.csv("~/UBC/GEA/Convergence/SpeciesMaps/sampleLocations/wl_worldclim_1970-2010.txt", sep = "\t")
+
+```
+
+
+
+```{r kimPlot, plot.width =20, plot.height = 30}
+require(maps)
+library(mapdata)
+library(maptools)  #for shapefiles
+library(scales)  #for transparency
+
+# 
+colorBlindPalette   <- c( "#E69F00", "#56B4E9", "#009E73", 
+                       "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+x_coords = c(-150, -50)
+y_coords = c(30, 64)
+
+map("worldHires","Canada", xlim= x_coords, ylim= y_coords , col="gray85", fill=TRUE, border = "gray85")  #plot Canada 
+map("worldHires","usa", xlim= x_coords, ylim= y_coords ,  col="gray85", fill=TRUE, add=TRUE, border = "gray85")  #add the adjacent parts of the US; can't forget my homeland
+map("worldHires","mexico", xlim= x_coords, ylim= y_coords , col="gray85", fill=TRUE, add=TRUE, border = "gray85")  #add the adjacent parts of the US; can't forget my homeland
+
+plot(coastal_DF, add=TRUE, xlim= x_coords, ylim= y_coords ,  col=alpha(colorBlindPalette[6], 0.6), border=FALSE)
+points(coastal_DF_samples$LONG, coastal_DF_samples$LAT, pch=19, col=colorBlindPalette[6], cex=0.5)  #plot Coastal_DF samples
+map("world", border = "navajowhite3")
+
+map("worldHires","Canada", xlim= x_coords, ylim= y_coords , col="gray85", fill=TRUE, border = "gray85")  #plot Canada 
+map("worldHires","usa", xlim= x_coords, ylim= y_coords ,  col="gray85", fill=TRUE, add=TRUE, border = "gray85")  #add the adjacent parts of the US; can't forget my homeland
+map("worldHires","mexico", xlim= x_coords, ylim= y_coords , col="gray85", fill=TRUE, add=TRUE, border = "gray85")  #add the adjacent parts of the US; can't forget my homeland
+
+
+plot(interior_DF, add=TRUE, xlim= x_coords, ylim= y_coords ,  col=alpha(colorBlindPalette[6], 0.6), border=FALSE)
+points(interior_DF_samples$LONG, interior_DF_samples$LAT, pch=19, col=colorBlindPalette[6], cex=0.5)  #plot Coastal_DF samples
+
+
+map("worldHires","Canada", xlim= x_coords, ylim= y_coords , col="gray85", fill=TRUE, border = "gray85")  #plot Canada 
+map("worldHires","usa", xlim= x_coords, ylim= y_coords ,  col="gray85", fill=TRUE, add=TRUE, border = "gray85")  #add the adjacent parts of the US; can't forget my homeland
+map("worldHires","mexico", xlim= x_coords, ylim= y_coords , col="gray85", fill=TRUE, add=TRUE, border = "gray85")  #add the adjacent parts of the US; can't forget my homeland
+
+
+plot(jack_pine, add=TRUE, xlim= x_coords, ylim= y_coords ,  col=alpha(colorBlindPalette[5], 0.6), border=FALSE) 
+points(jack_pine_samples$LONG, jack_pine_samples$LAT, pch=19, col=colorBlindPalette[5], cex=0.5)  #plot Coastal_DF samples
+
+
+map("worldHires","Canada", xlim= x_coords, ylim= y_coords , col="gray85", fill=TRUE, border = "gray85")  #plot Canada 
+map("worldHires","usa", xlim= x_coords, ylim= y_coords ,  col="gray85", fill=TRUE, add=TRUE, border = "gray85")  #add the adjacent parts of the US; can't forget my homeland
+map("worldHires","mexico", xlim= x_coords, ylim= y_coords , col="gray85", fill=TRUE, add=TRUE, border = "gray85")  #add the adjacent parts of the US; can't forget my homeland
+
+plot(lodgepole_pine, add = TRUE,  xlim= x_coords, ylim= y_coords ,  col=alpha(colorBlindPalette[4], 0.6), border=FALSE) 
+points(lodgepole_pine_samples$LONG, lodgepole_pine_samples$LAT, pch=19, col=colorBlindPalette[4], cex=0.5)  #plot Coastal_DF samples
+
+
+map("worldHires","Canada", xlim= x_coords, ylim= y_coords , col="gray85", fill=TRUE, border = "gray85")  #plot Canada 
+map("worldHires","usa", xlim= x_coords, ylim= y_coords ,  col="gray85", fill=TRUE, add=TRUE, border = "gray85")  #add the adjacent parts of the US; can't forget my homeland
+map("worldHires","mexico", xlim= x_coords, ylim= y_coords , col="gray85", fill=TRUE, add=TRUE, border = "gray85")  #add the adjacent parts of the US; can't forget my homeland
+
+
+#plot(interior_spruce, col=alpha(colorBlindPalette[3], 0.6), border=FALSE) 
+#points(interior_spruce_samples$LONG, interior_spruce_samples$LAT, pch=19, col=colorBlindPalette[5], cex=0.5)  #plot Coastal_DF samples
+
+
+map("worldHires","Canada", xlim= x_coords, ylim= y_coords , col="gray85", fill=TRUE, border = "gray85")  #plot Canada 
+map("worldHires","usa", xlim= x_coords, ylim= y_coords ,  col="gray85", fill=TRUE, add=TRUE, border = "gray85")  #add the adjacent parts of the US; can't forget my homeland
+map("worldHires","mexico", xlim= x_coords, ylim= y_coords , col="gray85", fill=TRUE, add=TRUE, border = "gray85")  #add the adjacent parts of the US; can't forget my homeland
+
+plot(western_larch, add=TRUE, xlim= x_coords, ylim= y_coords ,  col=alpha(colorBlindPalette[2], 0.6), border=FALSE)  #plot the spec
+points(western_larch_samples$LONG, western_larch_samples$LAT, pch=19, col=colorBlindPalette[2], cex=0.5)  #plot Coastal_DF samples
+?map("world", border = "red")
+
+
+```
+
+
+
+
+What about a ggplot Approach?
+
+Here's an example plot for one species:
+```{r ggplot_style}
+
+library(sf)
+library(ggspatial)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(ggplot2)
+require(maps)
+library(mapdata)
+library(maptools)  #for shapefiles
+library(scales)  #for transparency
+library(rgeos)
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+world_points<- st_centroid(world)
+world_points <- cbind(world, st_coordinates(st_centroid(world$geometry)))
+
+library("ggspatial")
+
+```
+
+```{r ggplotStyle_perSpecies, fig.height = 6, fig.width = 6}
+
+DF <- ggplot(data = world) +
+  geom_sf() +
+  geom_polygon(data  = coastal_DF, aes(long, lat, group= group), fill = colorBlindPalette[2])+
+  geom_point( data = coastal_DF_samples, aes(LONG, LAT), shape = 21, fill = colorBlindPalette[2])+
+  geom_polygon(data  = interior_DF, aes(long, lat, group= group), fill = "#036096")+
+  geom_point( data = interior_DF_samples, aes(LONG, LAT), shape = 21, fill = "#036096")+  annotation_scale(location = "bl", width_hint = 0.5) +
+  annotation_north_arrow(location = "bl", which_north = "true", 
+                         pad_x = unit(0.75, "in"), pad_y = unit(0.5, "in"),
+                         style = north_arrow_fancy_orienteering) +
+  coord_sf(xlim = c(-135, -100), ylim = c(30, 60))+
+  theme_bw()
+
+JP <- ggplot(data = world) +
+  geom_sf() +
+  geom_polygon(data  = jack_pine, aes(long, lat, group= group), fill = colorBlindPalette[1])+
+  geom_point( data = jack_pine_samples, aes(LONG, LAT), shape = 21, fill = colorBlindPalette[1])+
+  annotation_scale(location = "bl", width_hint = 0.5) +
+  annotation_north_arrow(location = "bl", which_north = "true", 
+                         pad_x = unit(0.75, "in"), pad_y = unit(0.5, "in"),
+                         style = north_arrow_fancy_orienteering) +
+  coord_sf(xlim = c(-130, -65), ylim = c(0, 75))+
+  theme_bw()
+
+LP <- ggplot(data = world) +
+  geom_sf() +
+  geom_polygon(data  = lodgepole_pine, aes(long, lat, group= group), fill = colorBlindPalette[3])+
+  geom_point( data = lodgepole_pine_samples, aes(LONG, LAT), shape = 21, fill = colorBlindPalette[3])+
+  annotation_scale(location = "bl", width_hint = 0.5) +
+  annotation_north_arrow(location = "bl", which_north = "true", 
+                         pad_x = unit(0.75, "in"), pad_y = unit(0.5, "in"),
+                         style = north_arrow_fancy_orienteering) +
+  coord_sf(xlim = c(-135, -100), ylim = c(30, 60))+
+  theme_bw()
+
+
+WL <- ggplot(data = world) +
+  geom_sf(col=NA) +
+  geom_polygon(data  = western_larch, aes(long, lat, group= group), fill = colorBlindPalette[6])+
+  geom_point( data = western_larch_samples, aes(LONG, LAT), shape = 21, fill = colorBlindPalette[6])+
+  annotation_scale(location = "bl", width_hint = 0.5) +
+  annotation_north_arrow(location = "bl", which_north = "true", 
+                         pad_x = unit(0.75, "in"), pad_y = unit(0.5, "in"),
+                         style = north_arrow_fancy_orienteering) +
+  coord_sf(xlim = c(-125, -110), ylim = c(40, 55))+
+  theme_bw()
+
+
+
+library(ggpubr)
+
+ggarrange(DF, JP, LP, WL, ncol = 2, nrow = 2)
+```
+
+Now plot the phylogeny
+
+```{r plotTree}
+library(tidyverse)
+library(ggtree)
+
+tree <- read.tree("data/tree_newick.nwk")
+tree
+```

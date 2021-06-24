@@ -1,0 +1,133 @@
+---
+title: "Two Species Convergence Test"
+author: "Tom Booker"
+date: "27/05/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+In this R Markdown document, I'll outline the test we devised for a two-species comparison in the CoAdapTree convergence analysis.
+
+What I want to do is to develop a single version of the null-W test, rather than having a test that needs to be run two times, make it run once.
+
+```{r generateData}
+
+# p-values for species 1
+S1 <- sample(20000)/20000
+# p-values for species 2
+S2 <- sample(20000)/20000
+
+# make a matrix
+species <- cbind(S1,S2)
+
+# sort each row of the dataframe/matrix
+sorted_species <- t(apply(species, 1, sort))
+
+# If the sorting worked, the values in column 1 should always be less than or equal to those in column 2
+#sum(sorted_species[,1] <= sorted_species[,2])
+
+# ^^ If that number did not equal 20,000 there'd be a problem
+
+# now let's identify all the outliers across the genomes at alpha_1 = 0.05
+alpha_1 = 0.01
+
+# should be a little bit less than 10% of the genome identified in this way
+sum(sorted_species[,1] < alpha_1)
+# Yep
+
+# Ok, so identify the hits in one species:
+one_way_hits <- sorted_species[sorted_species[,1] < alpha_1,]
+
+# Now get the two-way hits:
+alpha_2 = 0.05
+two_way_hits_1 <- one_way_hits[one_way_hits[,2] < alpha_2, ]
+
+sum(two_way_hits_1[,2] < alpha_2)
+
+## what about if we rescale those lower p-values?
+rescale_upper_p <- function(pVals){
+  if (pVals[1] > pVals[2]){
+    return(NA)
+  }
+   (1 -  (1- pVals[2])/(1- pVals[1]))
+}
+
+# A quick test:
+rescale_upper_p( c(0.0001, 0.9))
+
+# Now examine those with the higher p-value
+two_way_pVals <- apply(one_way_hits, 1 , rescale_upper_p )
+sum(two_way_pVals< alpha_2 )
+
+
+naive_hits <- sum((S1<0.05)*(S2<0.05)  )
+alpha_1 = 0.005
+alpha_2 = 0.1
+hist(rpois(1000,alpha_1*alpha_2*2*20000))
+
+```
+
+
+Now let's use some real (simulated) data
+
+```{r WZA}
+
+bc_raw <- read.csv("~/UBC/GEA/Convergence/WZA_results_for_testing/analysisFiles_s0.003/BC_Map_sampled.WZA.csv")
+bc_raw$pos <- bc_raw$position + (bc_raw$rep-1)*10e6
+cline_raw <- read.csv("~/UBC/GEA/Convergence/WZA_results_for_testing/analysisFiles_s0.003/cline_sampled.WZA.csv")
+cline_raw$pos <- cline_raw$position + (cline_raw$rep-1)*10e6
+
+bc <- bc_raw[order(bc_raw$pos),]
+cline <- cline_raw[order(cline_raw$pos),]
+
+bc$eP <- 1-rank(bc$empR_Z)/length(bc$empR_Z)
+cline$eP <- 1-rank(cline$empR_Z)/length(cline$empR_Z)
+
+# These are the legit convergent genes:
+hits <- (bc$LA > 0.005)&(cline$LA > 0.005)
+sum(hits) # This is the total number of true positives
+## There are 48 true hits in the genome of 20,000 genes
+
+s1 <- sample(bc$eP)
+s2 <- sample(cline$eP)
+
+species_pVals <- cbind(s1, s2)
+
+naive_hits <- (s1<0.1)&(s2<0.1)
+
+sum(naive_hits) # This is the number of significant hits
+sum(naive_hits * hits) # This is the number of hits present in the second set
+
+# sort each row of the dataframe/matrix
+sorted_species_pVals <- t(apply(species_pVals, 1, sort))
+
+# now let's identify all the outliers across the genomes at alpha_1 = 0.05
+alpha_1 = 0.01
+
+# should be a little bit less than 2*alpha_1 of the genome identified in this way
+#sum(sorted_species_pVals[,1] < alpha_1)
+
+# Yep
+
+one_way_hits <- sorted_species[sorted_species_pVals[,1] < alpha_1,]
+
+alpha_2 = 0.05
+
+two_way_hits_1 <- one_way_hits[one_way_hits[,2] < alpha_2, ]
+
+two_way_pVals <- apply(one_way_hits, 1 , rescale_upper_p )
+
+## Now let's put them together so we can compare to ground truth:
+
+identified_genes <- bc[(sorted_species_pVals[,1] < alpha_1)&(sorted_species_pVals[,2] < alpha_2),]
+
+sum((sorted_species_pVals[,1] < alpha_1)&(sorted_species_pVals[,2] < alpha_2))
+sum(hits[(sorted_species_pVals[,1] < alpha_1)&(sorted_species_pVals[,2] < alpha_2)])
+
+```
+
+
+

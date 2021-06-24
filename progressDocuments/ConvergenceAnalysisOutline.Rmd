@@ -1,0 +1,962 @@
+---
+title: "ConvergenceAnalysis"
+author: "Tom Booker"
+date: "31/01/2021"
+output: html_document
+---
+
+## Overview of the convergence analysis for the CoAdapTree data
+
+In this RMarkdown, I'll outline the different parts of the analysis that we've thought of for performing a comparative analysis of data obtained in the different conifer species. Aside from the RMarkdown, I have tried to do this all in base R so it is as portable as possible.
+
+For the purposes of this pretend analysis, I'm going to say that I have 5 species and that they form a star shaped phylogeny. I'll refer to each species as "Species 1" or "S1"
+
+For each reference genome, Pooja and Mengmeng have generated annotations. My understanding is (and I hope Pooja will correct me if I'm way off) is that the term orthogroup is used to refer to genes that are derived from a single lineage (more recently than the whole genome obviously). This means that if there were a set of paralogous genes present in only a single species, this would be an orthogroup. If a gene was present in 3 paralogs in one species, 2 in another, 0 in another and 1 in another that would also be an orthogroup.
+
+Here's the ortholog summary table that Pooja sent around:
+
+```{r orthoTable, echo= FALSE}
+orthoTable <- read.csv("OrthogroupTable.csv")
+rownames(orthoTable) <- orthoTable[,1]
+orthoTable <- orthoTable[,-1]
+library(knitr)
+library(ggplot2)
+library(reshape2)
+
+
+kable(orthoTable[,1:4])
+
+```
+The number of annotated genes is highly variable across the species. The total number of orthogroups that are present in all species is comparatively low, around 8,000 in total. The overall number of orthogroups is much higher than that though. So we want a method that is amenable to varying levels of missing data - and that is not biased by missing data.
+
+For the rest of this document, I'm going to use simulated data generated under the null to build and test the convergence analysis pipeline.
+
+## Phase 1
+
+```{r FlowChart_1, echo=FALSE}
+library(DiagrammeR)
+grViz("digraph flowchart {
+
+      node [fontname = Helvetica, shape = rectangle]        
+      tab2 [label = '@@2']
+      tab3 [label = '@@3']
+      tab4 [label = '@@4']
+      tab5 [label = '@@5']
+
+      node [fontname = Helvetica, shape = rectangle, style = filled, fillcolor = tan]        
+      tab1 [label = '@@1']
+
+
+      # edge definitions with the node IDs
+      tab1 -> tab2 -> tab3 -> tab4 -> tab5;
+      }
+  
+      tab1 []
+
+      [1]: 'Phase 1: Obtain a specific score for each gene/window in the genome'
+      [2]: 'Phase 2: Within a species, combine information across orthogroups'
+      [3]: 'Phase 3: Across species, compare the evidence that a particular orthogroup is “interesting” '
+      [4]: 'Phase 4: Combine information across all comparisons'
+      [5]: 'Phase 5: A post-hoc comparison of genes/windows'
+      ")
+```
+
+The first stage of the analysis is to perform a GEA for each species. We have proposed the WZA for the purpose of getting a per-gene score. You could alternatively perform the top-candidate test, or whatever you happened to think was best.
+
+In any case, we'll end up with a dataframe consisting of per-gene scores for each species. We will rank the scores and convert them to empirical p-values. 
+
+For the purpose of this document, I'll say that there are 100 orthogroups (I'll up that later on to test the convergence stuff in the script) with variable numbers of members in each species. Based on the table above, it is clear that we should expect that some genes will be members of orthogroups that have highly variable numbers in them, so we should build that in to the analysis.
+
+```{r perSpeciesData}
+## This function makes a list of integers, simulating the number of orthogroup members in a given species
+## I'm chopping up this exponential distribution to get a lot of 1s, but some 0s and values greater than 1
+
+makeOrthoGroupMembership <- function(n){
+  x <- rexp(n)
+  x[x>1] <- floor(x[x>1])
+  x[x > 0.2] <- ceiling(x[x>0.2])
+  x[x<0.2] <- floor(x[x<0.2])
+  return(x)
+}
+
+## This next function simulates a WZA on each species by sampling random normal data. These data are then ranked an converted to empirical p-values
+
+makeSpeciesWZA <- function(n){
+  orthos <- makeOrthoGroupMembership(n)
+  names <- rep(paste("orthogroup",1:n, sep = ""), times = orthos)
+  df <- data.frame(orth = names)
+  ## Simulate Z scores (I use the mean of 3 and sd of 1.5 for realistic flavour, though this won't make any difference here)
+  df$Z <- rnorm(nrow(df), 3, 1.5)
+  ## Calculate empirical ps
+  df$Z_eP <- 1-(rank(df$Z)/(nrow(df)+1))
+  return(df)
+}
+
+n_orthogroups = 20000
+n_species = 5
+
+# Make a DF for each species
+S1_df <- makeSpeciesWZA(n_orthogroups)
+S2_df <- makeSpeciesWZA(n_orthogroups)
+S3_df <- makeSpeciesWZA(n_orthogroups)
+S4_df <- makeSpeciesWZA(n_orthogroups)
+S5_df <- makeSpeciesWZA(n_orthogroups)
+
+## We'll have something roughly like this for a single species:
+
+head(S1_df, n = 15)
+
+```
+
+
+## Phase 2
+```{r FlowChart_2, echo=FALSE}
+library(DiagrammeR)
+grViz("digraph flowchart {
+      # node definitions with substituted label text
+   
+      node [fontname = Helvetica, shape = rectangle]        
+      tab1 [label = '@@1']
+      tab3 [label = '@@3']
+      tab4 [label = '@@4']
+      tab5 [label = '@@5']
+
+      node [fontname = Helvetica, shape = rectangle, style = filled, fillcolor = tan]        
+      tab2 [label = '@@2']
+
+
+      # edge definitions with the node IDs
+      tab1 -> tab2 -> tab3 -> tab4 -> tab5;
+      }
+  
+      tab1 []
+
+      [1]: 'Phase 1: Obtain a specific score for each gene/window in the genome'
+      [2]: 'Phase 2: Within a species, combine information across orthogroups'
+      [3]: 'Phase 3: Across species, compare the evidence that a particular orthogroup is “interesting” '
+      [4]: 'Phase 4: Combine information across all comparisons'
+      [5]: 'Phase 5: A post-hoc comparison of genes/windows'
+      ")
+```
+
+In this phase we are going to get a single p-value for each of the orthogroups present. If there's a single p-value for a species, no problem! However, if there are multiple members of an orthogroup for a species, we'll have several p-values. With multiple p-values, there is an increased chance that one of them has an extreme value by chance, so we'll want to deal with the multiple testing issue. Bonferonni is very passé, so let's use the Dunn-Šidak. It's a family-wise error rate correction that is a bit more sensible than the Bonferonni. In the Bonferonni, you just divide alpha by number of tests (or multiply the p-value for each test). In the Dunn-Šidak, you assume independence and raise the (1 - p-value) to m, the number of tests. If you were doing a sequential test you might raise to m/i, where i is the rank index of the p-values. The function ```p_value_adjustment``` below implements this for the single lowest p-value.
+
+```{r perOrthogroupScores}
+
+
+p_value_adjustment <- function(p_vec){
+  p_adj = 1 - (1 - min(p_vec))^length(p_vec)
+  return(p_adj)
+      }
+
+
+get_orthogroup_p_values <- function( species_DF , speciesLabel){
+  gene_Score <- tapply(species_DF$Z_eP, species_DF$orth, p_value_adjustment)
+  gene_Score_Names <- names(gene_Score)
+  orthoDF <- data.frame(orthogroup = gene_Score_Names, temp = as.numeric(gene_Score)  )
+  names(orthoDF) <- c("orthogroup",speciesLabel)
+  return(orthoDF)
+}
+
+
+
+S1_ortho <- get_orthogroup_p_values(S1_df, "S1_p")
+S2_ortho <- get_orthogroup_p_values(S2_df, "S2_p")
+S3_ortho <- get_orthogroup_p_values(S3_df, "S3_p")
+S4_ortho <- get_orthogroup_p_values(S4_df, "S4_p")
+S5_ortho <- get_orthogroup_p_values(S5_df, "S5_p")
+
+# merging all the S._ortho DFs into a single frame can be done using the following one-liner
+# we do this by re-defining the merge function, hard-coding in some of the arguments so that 
+# we can retain orthogroups that are missing in one species or another
+SpeciesComparison <- Reduce(function(x, y) merge(x, y, by = "orthogroup", all = T), 
+                            list(S1_ortho, S2_ortho, S3_ortho, S4_ortho, S5_ortho))
+
+head(SpeciesComparison)
+```
+
+
+Now we have a single dataframe that contains the p-values for each orthogroup in each species. We can now go ahead and perform a convergence analysis on these.
+
+
+I'm also going to run the above analysis with no p-value adjustment, just to take a little looksie.
+```{r noAdjust}
+
+
+p_value_no_adjustment <- function(p_vec){
+  min( p_vec )
+  }
+
+get_orthogroup_p_values_noAdjust <- function( species_DF , speciesLabel){
+  gene_Score <- tapply(species_DF$Z_eP, species_DF$orth, p_value_no_adjustment)
+  gene_Score_Names <- names(gene_Score)
+  orthoDF <- data.frame(orthogroup = gene_Score_Names, temp = as.numeric(gene_Score)  )
+  names(orthoDF) <- c("orthogroup",speciesLabel)
+  return(orthoDF)
+}
+
+S1_ortho_noAdjust <- get_orthogroup_p_values_noAdjust(S1_df, "S1_p")
+S2_ortho_noAdjust <- get_orthogroup_p_values_noAdjust(S2_df, "S2_p")
+S3_ortho_noAdjust <- get_orthogroup_p_values_noAdjust(S3_df, "S3_p")
+S4_ortho_noAdjust <- get_orthogroup_p_values_noAdjust(S4_df, "S4_p")
+S5_ortho_noAdjust <- get_orthogroup_p_values_noAdjust(S5_df, "S5_p")
+
+
+SpeciesComparison_noAdjust <- Reduce(function(x, y) merge(x, y, by = "orthogroup", all = T), 
+                            list(S1_ortho_noAdjust, S2_ortho_noAdjust, S3_ortho_noAdjust, S4_ortho_noAdjust, S5_ortho_noAdjust))
+
+```
+
+
+## Phase 3
+
+```{r FlowChart_3, echo=FALSE}
+library(DiagrammeR)
+grViz("digraph flowchart {
+      # node definitions with substituted label text
+   
+      node [fontname = Helvetica, shape = rectangle]        
+      tab1 [label = '@@1']
+      tab2 [label = '@@2']
+      tab4 [label = '@@4']
+      tab5 [label = '@@5']
+
+      node [fontname = Helvetica, shape = rectangle, style = filled, fillcolor = tan]        
+      tab3 [label = '@@3']
+
+
+      # edge definitions with the node IDs
+      tab1 -> tab2 -> tab3 -> tab4 -> tab5;
+      }
+  
+      tab1 []
+
+      [1]: 'Phase 1: Obtain a specific score for each gene/window in the genome'
+      [2]: 'Phase 2: Within a species, combine information across orthogroups'
+      [3]: 'Phase 3: Across species, compare the evidence that a particular orthogroup is “interesting” '
+      [4]: 'Phase 4: Combine information across all comparisons'
+      [5]: 'Phase 5: A post-hoc comparison of genes/windows'
+      ")
+```
+
+In this phase we apply the pMax test to the results. The the various tweaks we have made to the pMax, we now have a statistical test that makes use of order statistics to ask whether a paricular ortholog shows a strange pattern of rankings consistent with convergent evolution.
+
+```{r run_pMax}
+# First define the pMax function for the data
+p_jth <- function(plist,j) {
+  # get the list of the p-value vector
+  k=length(plist)
+  # return an NA if the j parameter is bigger than the length of the p vector
+  if(j>k) {return(NA)}
+  # sort the p-values
+  pjth=sort(plist)[j]
+  # scale the probabilities 
+  prob = if(j<k) (pjth /sort(plist)[j+1]) else max(plist)
+  # perform the test
+  dbinom(x = j, size = j, prob=prob ) 
+}
+
+
+## Here's a wrapper function to run pMax on the simulated ortholog datasets
+run_pMax <- function(species_DF, n_species, max_n){
+  # Make a matrix of the p-values from the species dataframe
+  species_M <- as.matrix(species_DF[,2:(n_species+1)])
+  
+  # create and empty list to put results in
+  pMax_results = list()
+  # loop over the different convergence configurations
+  for (n in 1:max_n){
+    # This ugly line applies the p_jth function to each line of the matrix using the current configuration 
+    pMax_results_temp = apply(species_M, 1, function(x) p_jth( x[!is.na(x)], n) )
+    # now just plop the results in the list
+    pMax_results[[n]] = pMax_results_temp
+  }
+  # Convert the results into a nice data frame
+  pMax_DF = as.data.frame( do.call(cbind, pMax_results) )
+  # Give the columns infomative names
+  names(pMax_DF) = paste("pMax_",1:max_n, sep = '')
+  # done
+  return(cbind( species_DF, pMax_DF ))
+}
+
+
+
+# Run the p_jth procedure on the p-value adjusted data
+SpeciesComparison_pMax <- run_pMax(SpeciesComparison, n_species, n_species)
+
+# Run the p_jth procedure on the unadjusted data
+SpeciesComparison_pMax_noAdjust <- run_pMax(SpeciesComparison_noAdjust, n_species, n_species)
+
+```
+
+Great, now we've run the pMax on each of the orthologs present in all the species. 
+
+Now let's take a look at the results. If everything went according to plan then we should have a nice uniform distribution of pMax results for each level of comparison...
+
+```{r plot_pMax}
+par(mfrow=c(3,2))
+## These are self explanatory histograms of the results
+hist(SpeciesComparison_pMax$pMax_1, main = "pMax - 1 species", xlab = "p-value", breaks = 100)
+abline( h = length(na.omit(SpeciesComparison_pMax$pMax_2))/100, lty = 2)
+
+hist(SpeciesComparison_pMax$pMax_2, main = "pMax - 2 species", xlab = "p-value", breaks = 100)
+abline( h = length(na.omit(SpeciesComparison_pMax$pMax_2))/100, lty = 2)
+
+hist(SpeciesComparison_pMax$pMax_3, main = "pMax - 3 species", xlab = "p-value", breaks = 100)
+abline( h = length(na.omit(SpeciesComparison_pMax$pMax_3))/100, lty = 2)
+
+hist(SpeciesComparison_pMax$pMax_4, main = "pMax - 4 species", xlab = "p-value", breaks = 100)
+abline( h = length(na.omit(SpeciesComparison_pMax$pMax_4))/100, lty = 2)
+
+hist(SpeciesComparison_pMax$pMax_5, main = "pMax - 5 species", xlab = "p-value", breaks = 100)
+abline( h = length(na.omit(SpeciesComparison_pMax$pMax_5))/100, lty = 2)
+
+```
+
+The horizontal dashed line indicates the expected number of orthogroups falling into each of the frequency bins
+
+As you might expect, not correcting for multiple comparisons when getting the per-orthogroup scores results in a lot of false positives...
+
+```{r plot_pMax_noAdjust}
+par(mfrow=c(2,2))
+hist(SpeciesComparison_pMax_noAdjust$pMax_2, main = "pMax - 2 species", xlab = "p-value", breaks = 100)
+abline( h = length(na.omit(SpeciesComparison_pMax_noAdjust$pMax_2))/100, lty = 2)
+
+hist(SpeciesComparison_pMax_noAdjust$pMax_3, main = "pMax - 3 species", xlab = "p-value", breaks = 100)
+abline( h = length(na.omit(SpeciesComparison_pMax_noAdjust$pMax_3))/100, lty = 2)
+
+hist(SpeciesComparison_pMax_noAdjust$pMax_4, main = "pMax - 4 species", xlab = "p-value", breaks = 100)
+abline( h = length(na.omit(SpeciesComparison_pMax_noAdjust$pMax_4))/100, lty = 2)
+
+hist(SpeciesComparison_pMax_noAdjust$pMax_5, main = "pMax - 5 species", xlab = "p-value", breaks = 100)
+abline( h = length(na.omit(SpeciesComparison_pMax_noAdjust$pMax_5))/100, lty = 2)
+
+```
+
+## Phase 4
+
+```{r FlowChart_4, echo=FALSE}
+library(DiagrammeR)
+grViz("digraph flowchart {
+      # node definitions with substituted label text
+   
+      node [fontname = Helvetica, shape = rectangle]        
+      tab1 [label = '@@1']
+      tab2 [label = '@@2']
+      tab3 [label = '@@3']
+      tab5 [label = '@@5']
+
+      node [fontname = Helvetica, shape = rectangle, style = filled, fillcolor = tan]        
+      tab4 [label = '@@4']
+
+
+      # edge definitions with the node IDs
+      tab1 -> tab2 -> tab3 -> tab4 -> tab5;
+      }
+  
+      tab1 []
+
+      [1]: 'Phase 1: Obtain a specific score for each gene/window in the genome'
+      [2]: 'Phase 2: Within a species, combine information across orthogroups'
+      [3]: 'Phase 3: Across species, compare the evidence that a particular orthogroup is “interesting” '
+      [4]: 'Phase 4: Combine information across all comparisons'
+      [5]: 'Phase 5: A post-hoc comparison of genes/windows'
+      ")
+```
+
+So now we have a pMax score for each of the possible comparisons. What are we going to do with that information?
+
+What we propose is to take the minimum p-value from the list and perform the same p-value adjustment that we described above. This assumes that there is no correlation among the p-values under the null. Let's look at that.
+
+Here's the correlation matrix among the various tests
+
+``` {r p_jth_correlations}
+
+## Start by grabbing the relevant part of the dataframe
+SpeciesComparison_pMax_only <- SpeciesComparison_pMax[,7:10]
+# Due to missing data, we need to use the "pair-wise complete observations option so we don't just propagate NAs
+cor(SpeciesComparison_pMax_only, use = "pairwise.complete.obs")
+
+```
+
+Phew, there are no strong correlations among the different p_jth levels. That's what we were expecting, but it's good to double check.
+
+So far we've worked wih null data generated with the orthogroup info. In the next part we are going to examine the statistical power of the p_jth procedure when there are true positives. For this we will use simulated data, but aren't going to use the orthogroup approach, just for convenience.
+
+Let's repeat the above and generate with a set of null observations, but that have no missing data. Here are some functions to simulate correlated data and apply the p_jth test.
+
+``` {r simulateCorrelatedData_functions}
+## Here's a function for simulating correlated data
+
+simulateCorrelation <- function(r, n = 100){
+# r is the population correlation coefficient 
+# x1 is the sample data
+    x1 = rnorm(n)
+# x2 is the data that will be transformed so as to be correlated with x1
+    x2 = rnorm(n)
+
+    Y = r*x1+sqrt(1-r*r)*x2     
+    return( cor.test(Y, x1)$p.value )
+}
+
+
+simulateCorrelation_empirical <- function(r, n = 100, genes = 20000){
+  # r is the population correlation coefficient 
+  # x1 is the sample data
+  x1 = rnorm(n)
+  # x2 is the data that will be transformed so as to be correlated with x1
+  x2 = rnorm(n)
+  
+  Y = r*x1+sqrt(1-r*r)*x2     
+  empricial_p <- rank( c( cor.test(Y, x1)$p.value, runif(genes-1) ) )[1]/genes
+  return( empricial_p )
+}
+
+## Now make the function run in a vectorised fashion 
+simulateCorrelationVectorized_parametric <- Vectorize(simulateCorrelation)
+
+simulateCorrelationVectorized_empirical <- Vectorize(simulateCorrelation_empirical)
+
+# Wrap the function up so that it takes a vector of correlations for each "species"
+# and returns the data in a nice way
+simulateMultipleGEAs <- function(corVector, times, empirical = F){
+  # t is for transpose
+  if (empirical==F){
+      t(replicate(times,  simulateCorrelationVectorized_parametric(corVector, n = 40) )  )
+  }
+  else if (empirical == T){
+          t(replicate(times,  simulateCorrelationVectorized_empirical(corVector, n = 40) )  )
+  }
+}
+
+simulateMultipleGEAs_beta <- function(corVector, a, b, times){
+  # t is for transpose
+  correlations <- c(rbeta(sum(corVector!=0), a, b), rep(0, length(corVector) - sum(corVector!=0)))
+    t(replicate(times,  simulateCorrelationVectorized(correlations, n = 40) )  )
+}
+
+## Note that the 'n = 20' in the above specifies that a sample of 20 is being taken.
+#This is a relatively small number to make things nice and noisy
+
+## Here's a wrapper function that runs the pMax on the 2, 3, 4 and 5 case. To be used later...
+p_jth_wrapper <- function( correlationSet ){
+  p1th <- apply(correlationSet, 1, function(x) p_jth(x,1))
+  p2th <- apply(correlationSet, 1, function(x) p_jth(x,2))
+  p3th <- apply(correlationSet, 1, function(x) p_jth(x,3))
+  p4th <- apply(correlationSet, 1, function(x) p_jth(x,4))
+  p5th <- apply(correlationSet, 1, function(x) p_jth(x,5))
+
+  return( data.frame(p1 = p1th, p2 = p2th, p3 = p3th, p4 = p4th, p5 = p5th) )
+}
+
+```
+
+
+
+
+``` {r simulateUnorrelatedData}
+
+## Let's start with a case with no correlation (10000 replicates) 
+## The vector of zeroes is the population correlation for each "species"
+noCorrelationSet <- simulateMultipleGEAs( c(0.0, 0.0, 0.0, 0.0, 0.0), 1000)
+
+## run the procedure using the wrapper function
+noCor_result  <- p_jth_wrapper( noCorrelationSet )
+  
+
+## Let's now look at the top hits across the p_j tests
+noCor_combined <- apply(as.matrix(noCor_result), 1, p_value_adjustment)
+
+## A nice uniform distribution - that's what we want to see!
+hist(noCor_combined)
+
+```
+
+Additionally, here's the correlation matrix for this null data:
+```{r nullCorMat,  echo = F }
+
+cor( noCor_result)
+
+```
+On this simulated data, the test is well-behaved and works as it should. 
+
+Now let's look at the power to detect a true positive in a particular case
+
+```{r singlePowerSet}
+
+## Here's a case where three species have a correlation of 0.3 and two are zeroes. We simulate 10,000 cases of this
+singleHitSet <- simulateMultipleGEAs( c(0.3, 0.0, 0.0, 0.0, 0.0), 1000)
+
+## Run the p_jth on the data 
+singleHit_result  <- p_jth_wrapper( singleHitSet )
+
+## Hey look, no correlation among values under the p2, p3, p4 , p5 cases 
+cor(singleHit_result)
+
+## Let's now look at the top hits
+singleHit_combined <- apply(as.matrix(singleHit_result), 1, p_value_adjustment)
+
+## A very non-uniform distribution - that's expected cause there are true postiives present
+hist(singleHit_combined)
+
+## Calculate the power. What proportion of simulations had a p-value less than 0.05?
+sum(singleHit_combined<0.05)/length(singleHit_combined)
+
+```
+So there's around 28% power for the case with three positives and two nulls.
+
+
+Let's look at the p-value distribution for the simualted correlation data
+
+
+```{r correlationP_vals, echo = FALSE}
+## Simulate 1000 p-values for each the correlations in the vector
+p_value_Set <- simulateMultipleGEAs( c(0.05, 0.1 ,0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9), 1000)
+# Put these in a dataframe
+p_value_DF <- data.frame(p_value_Set)
+# give proper column headings
+names(p_value_DF) <- c("rho005", "rho01" ,"rho02", "rho03", "rho04", "rho05", "rho06", "rho07", "rho08", "rho09")
+library(reshape2)
+# melt the dataframe so it plots nicely
+p_value_melted <- melt(p_value_DF)
+
+# reformat the factor so that the labels in the plot look good
+p_value_melted$variable <- factor(p_value_melted$variable, 
+                                  levels = c("rho005", "rho01" ,"rho02", "rho03", "rho04", "rho05", "rho06", "rho07", "rho08", "rho09"),
+                                  labels = c(expression(italic("r")*" = 0.05"),
+                                             expression(italic("r")*" = 0.1"),
+                                             expression(italic("r")*" = 0.2"),
+                                             expression(italic("r")*" = 0.3"),
+                                             expression(italic("r")*" = 0.4"),
+                                             expression(italic("r")*" = 0.5"),
+                                             expression(italic("r")*" = 0.6"),
+                                             expression(italic("r")*" = 0.7"),
+                                             expression(italic("r")*" = 0.8"),
+                                             expression(italic("r")*" = 0.9")))
+# plot those puppies
+ggplot(data = p_value_melted, aes(x = value))+
+  geom_histogram(alpha= 0.75, bins = 50)+
+  facet_wrap(~variable, scales = "free", ncol = 5, nrow= 2, labeller = label_parsed)+
+  scale_fill_brewer("Population \ncorrelation\n coefficient", palette = "Dark2")+
+  xlab(expression(italic("p")*"-value"))+
+  ylab("Count")+
+  guides(color = F, fill = F)+
+  theme_bw()
+
+```
+I put this here so we can see what it kind of strenth of evidence is required to get a true positive. 
+
+
+## Phase 4.1
+
+Now we'll do big batches of the above power procedure to look at how power varies across the 
+
+```{r powerFunctions}
+## This function just does what the above code chunk does, but in a function
+
+calculatePower <- function( nSpecies, alpha , empirical_pVals = F){
+# Make an empty list to put results in
+
+  outLines = list()
+# make a list of correlation coefficients you want to test
+  correlationsToTest <-  c(0.05,1:9/10)
+  
+# loop over the correlation list
+  for (i in seq(length(correlationsToTest) )){
+# print out the current config - good for keeping track - not good for RMarkdown
+ #     print(c(rep(correlationsToTest[i],nSpecies),rep(0,5 - nSpecies)) )
+# Here we simulate the p-values for the appropriate correlation matrix
+    HitSet <- simulateMultipleGEAs( c(rep(correlationsToTest[i],nSpecies),rep(0,5 - nSpecies)), 100, empirical = empirical_pVals)
+
+# Now we run the p_jth on the simulated data
+    Hit_result  <- p_jth_wrapper( HitSet )
+    
+# Now get a single p-value for each simulation
+    Hit_combined <- apply(as.matrix(Hit_result), 1, p_value_adjustment)
+
+# For each simulation, see which convergence configuration the minimum p corresponds to    
+    Hit_minP <- apply(as.matrix(Hit_result), 1, function(x) c(1:5)[which.min(x)]) * Hit_combined<alpha
+
+# Make a vector of output to send to the outLines list, 
+    # include the number of species with a positive (nSpecies)
+    # the estiamted power
+    # the proportion of times the correct configuration was chosen
+
+    outLines[[i]] <- c(nSpecies, 
+                       correlationsToTest[i], 
+                       sum(Hit_combined<alpha)/length(Hit_combined),
+                       sum(Hit_minP == nSpecies)/sum(Hit_minP!=0)
+    )
+  }
+  
+  temp_df <-data.frame( do.call(rbind, outLines) )
+  names( temp_df ) <- c("nSpecies", "Cor", "pMaxPower","nSpeciesPower")
+  return(temp_df)
+}
+```
+
+
+```{r runPowerSims_parametric}
+
+## Now lets run the power simulations for the various cases under varying alpha
+
+AllSpeciesComparison_alpha05_parametric <- rbind( calculatePower(1, 0.05),
+                               calculatePower(2, 0.05),
+                               calculatePower(3, 0.05),
+                               calculatePower(4, 0.05),
+                               calculatePower(5, 0.05) )
+AllSpeciesComparison_alpha05_parametric$alpha = 0.05
+
+AllSpeciesComparison_alpha01_parametric <- rbind( calculatePower(1, 0.01),
+                                       calculatePower(2, 0.01),
+                                       calculatePower(3, 0.01),
+                                       calculatePower(4, 0.01),
+                                       calculatePower(5, 0.01) )
+AllSpeciesComparison_alpha01_parametric$alpha = 0.01
+
+
+AllSpeciesComparison_alpha001_parametric <- rbind( calculatePower(1, 0.001),
+                                       calculatePower(2, 0.001),
+                                       calculatePower(3, 0.001),
+                                       calculatePower(4, 0.001),
+                                       calculatePower(5, 0.001) )
+AllSpeciesComparison_alpha001_parametric$alpha = 0.001
+
+# Bring the results together into a nice DF
+AllSpeciesComparison_parametric <- rbind( AllSpeciesComparison_alpha05_parametric, AllSpeciesComparison_alpha01_parametric, AllSpeciesComparison_alpha001)
+# Reformat labels for plotting
+AllSpeciesComparison_parametric$alpha <- factor(AllSpeciesComparison_parametric$alpha,
+                                     levels = c(0.05, 0.01, 0.001),
+                                     labels = c(expression(alpha*" = 0.05"),
+                                                expression(alpha*" = 0.01"),
+                                                expression(alpha*" = 0.001")))
+
+```
+
+
+
+```{r plotPower_parametric}
+
+ggplot( data = AllSpeciesComparison_parametric, aes( x = Cor, y = pMaxPower, col = as.factor(nSpecies)))+
+  geom_line(lwd = 1)+
+  scale_x_continuous("Population Correlation Coefficient for True Positives", limits = c(0,1))+
+  scale_y_continuous(expression("Power to to detect gene"), limits = c(0,1))+
+  scale_color_brewer("Number of \nspecies\nwith a true\npositive", palette = "Dark2")+
+  facet_grid(~alpha, labeller = label_parsed)+
+  theme_bw()
+## The plateau at 0.05 is the false positives! The plataeu at ~0.2 for a singleton is something to be discussed
+
+
+ggplot( data = AllSpeciesComparison_parametric, aes( x = Cor, y = nSpeciesPower, col = as.factor(nSpecies)))+
+  geom_line(lwd = 1)+
+  scale_x_continuous("Population Correlation Coefficient for True Positives", limits = c(0,1))+
+  scale_y_continuous(expression("Proportion of cases where the min p-value is for the right number of species"), limits = c(0,1))+
+  scale_color_brewer("Number of \nspecies\nwith a true\npositive", palette = "Dark2")+
+  geom_hline(aes(yintercept = 0.2), lty = 2)+
+  facet_grid(~alpha, labeller = label_parsed)+
+  theme_bw()
+## The plataeu at 0.2 is the false positives - we will be right 1/5 of the time by chance
+
+```
+
+
+
+
+
+
+
+```{r}
+## Let's convert the p_jth function to Mike's suggested p_min function
+p_jth <- function(plist,j) {
+  # get the list of the p-value vector
+  k=length(plist) -1
+  # return an NA if the j parameter is bigger than the length of the p vector
+  if(j>k) {return(NA)}
+  if (j-1 == k) {return(max(plist)^k)}
+  else{
+    psort = sort(plist)[2:length(plist)]
+    return((psort[j-1]/psort[j])^(j-1))
+  }
+}
+
+```
+
+
+
+
+```{r}
+knitr::knit_exit()
+```
+
+```{r powerFunctions_pMin}
+## This function just does what the above code chunk does, but in a function
+
+calculatePower <- function( nSpecies, alpha ){
+# Make an empty list to put results in
+
+  outLines = list()
+# make a list of correlation coefficients you want to test
+  correlationsToTest <-  c(0.05,1:9/10)
+  
+# loop over the correlation list
+  for (i in seq(length(correlationsToTest) )){
+# print out the current config - good for keeping track - not good for RMarkdown
+ #     print(c(rep(correlationsToTest[i],nSpecies),rep(0,5 - nSpecies)) )
+# Here we simulate the p-values for the appropriate correlation matrix
+    HitSet <- simulateMultipleGEAs( c(rep(correlationsToTest[i],nSpecies),rep(0,5 - nSpecies)), 100)
+
+# Now we run the p_jth on the simulated data
+    Hit_result  <- p_jth_wrapper( HitSet )
+# Now get a single p-value for each simulation
+    Hit_combined <- apply(as.matrix(Hit_result), 1, p_value_adjustment)
+
+# For each simulation, see which convergence configuration the minimum p corresponds to    
+    Hit_minP <- apply(as.matrix(Hit_result), 1, function(x) c(1:4)[which.min(x)])
+
+# Make a vector of output to send to the outLines list, 
+    # include the number of species with a positive (nSpecies)
+    # the estiamted power
+    # the proportion of times the correct configuration was chosen
+
+    outLines[[i]] <- c(nSpecies, 
+                       correlationsToTest[i], 
+                       sum(Hit_combined<alpha)/length(Hit_combined),
+                       sum(Hit_minP == nSpecies)/length(Hit_combined)
+    )
+  }
+  
+  temp_df <-data.frame( do.call(rbind, outLines) )
+  names( temp_df ) <- c("nSpecies", "Cor", "pMaxPower","nSpeciesPower")
+  return(temp_df)
+}
+```
+
+
+```{r runPowerSims_pMin_Mike}
+
+## Now lets run the power simulations for the various cases under varying alpha
+
+AllSpeciesComparison_alpha05 <- rbind( calculatePower(1, 0.05),
+                               calculatePower(2, 0.05),
+                               calculatePower(3, 0.05),
+                               calculatePower(4, 0.05),
+                               calculatePower(5, 0.05) )
+AllSpeciesComparison_alpha05$alpha = 0.05
+
+AllSpeciesComparison_alpha01 <- rbind( calculatePower(1, 0.01),
+                                       calculatePower(2, 0.01),
+                                       calculatePower(3, 0.01),
+                                       calculatePower(4, 0.01),
+                                       calculatePower(5, 0.01) )
+AllSpeciesComparison_alpha01$alpha = 0.01
+
+
+AllSpeciesComparison_alpha001 <- rbind( calculatePower(1, 0.001),
+                                       calculatePower(2, 0.001),
+                                       calculatePower(3, 0.001),
+                                       calculatePower(4, 0.001),
+                                       calculatePower(5, 0.001) )
+AllSpeciesComparison_alpha001$alpha = 0.001
+
+# Bring the results together into a nice DF
+AllSpeciesComparison <- rbind( AllSpeciesComparison_alpha05, AllSpeciesComparison_alpha01, AllSpeciesComparison_alpha001)
+# Reformat labels for plotting
+AllSpeciesComparison$alpha <- factor(AllSpeciesComparison$alpha,
+                                     levels = c(0.05, 0.01, 0.001),
+                                     labels = c(expression(alpha*" = 0.05"),
+                                                expression(alpha*" = 0.01"),
+                                                expression(alpha*" = 0.001")))
+
+```
+
+
+```{r plotPower_pMin_Mike}
+
+ggplot( data = AllSpeciesComparison, aes( x = Cor, y = pMaxPower, col = as.factor(nSpecies)))+
+  geom_line(lwd = 1)+
+  scale_x_continuous("Population Correlation Coefficient for True Positives", limits = c(0,1))+
+  scale_y_continuous(expression("Power to to detect gene"), limits = c(0,1))+
+  scale_color_brewer("Number of \nspecies\nwith a true\npositive", palette = "Dark2")+
+  facet_grid(~alpha, labeller = label_parsed)+
+  theme_bw()
+## The plateau at 0.05 is the false positives! The plataeu at ~0.2 for a singleton is something to be discussed
+
+
+ggplot( data = AllSpeciesComparison[AllSpeciesComparison$nSpecies!=1,], aes( x = Cor, y = nSpeciesPower, col = as.factor(nSpecies+1)))+
+  geom_line(lwd = 1)+
+  scale_x_continuous("Population Correlation Coefficient for True Positives", limits = c(0,1))+
+  scale_y_continuous(expression("Proportion of cases where the min p-value is for the right number of species"), limits = c(0,1))+
+  scale_color_brewer("Number of \nspecies\nwith a true\npositive", palette = "Dark2")+
+  geom_hline(aes(yintercept = 0.25), lty = 2)+
+  facet_grid(~alpha, labeller = label_parsed)+
+  theme_bw()
+## The plataeu at 0.25 is the false positives - we will be right 1/4 of the time by chance
+
+```
+
+```{r quitter}
+knitr::knit_exit()
+```
+
+## Now do it all again with the beta distribution
+
+Why? Because assuming that the population correlation is the same for all species is a bit silly. 
+
+Instead, for a given gene, we could draw correlation coefficeints for a species from the beta distribution. That distribution is handy because it has support [ 0,1 ] - just like the magnitude of a correlation.
+
+We can use the beta distribution to generate a nice distribution of population correlation coefficients. 
+The following shows a simulated distriution where a + b = 10 (the parameters of the beta distribution)
+You can make the following more peaky by changing a + b = 20
+```{r beta_dist}
+
+plot(1:1000/1000,dbeta(1:1000/1000, 2,8), type = 'l', ylab=  "density", xlab="Population correlation coefficient", main = "a + b  = 10")
+lines(1:1000/1000,dbeta(1:1000/1000, 4,6), col = "red")
+lines(1:1000/1000,dbeta(1:1000/1000, 6,4), col = "blue")
+lines(1:1000/1000,dbeta(1:1000/1000, 8,2), col = "green")
+
+plot(1:1000/1000,dbeta(1:1000/1000, 4,16), type = 'l', ylab=  "density", xlab="Population correlation coefficient", main = "a + b  = 20")
+lines(1:1000/1000,dbeta(1:1000/1000, 8,12), col = "red")
+lines(1:1000/1000,dbeta(1:1000/1000, 12,8), col = "blue")
+lines(1:1000/1000,dbeta(1:1000/1000, 16,4), col = "green")
+
+
+```
+
+```{r powerFunctions_beta}
+## This function just does what the above code chunk does, but in a function
+
+calculatePower_beta <- function( nSpecies, alpha ){
+# Make an empty list to put results in
+
+  outLines = list()
+# make a list of correlation coefficients you want to test
+  correlationsToTest <-  (1:9)*2
+  sumBeta = 20
+    # loop over the correlation list
+  for (i in seq(length(correlationsToTest) )){
+# print out the current config - good for keeping track - not good for RMarkdown
+ #     print(c(rep(correlationsToTest[i],nSpecies),rep(0,5 - nSpecies)) )
+# Here we simulate the p-values for the appropriate correlation matrix
+    HitSet <- simulateMultipleGEAs_beta( c(rep(correlationsToTest[i],nSpecies),rep(0,5 - nSpecies)), correlationsToTest[i], sumBeta - correlationsToTest[i], 100)
+#    HitSet <- simulateMultipleGEAs_beta( c(0.3, 0.3, , 0.0, 0.0), 2,8, 10000)
+
+# Now we run the p_jth on the simulated data
+    Hit_result  <- p_jth_wrapper( HitSet )
+# Now get a single p-value for each simulation
+    Hit_combined <- apply(as.matrix(Hit_result), 1, p_value_adjustment)
+
+# For each simulation, see which convergence configuration the minimum p corresponds to    
+    Hit_minP <- apply(as.matrix(Hit_result), 1, function(x) c(2:5)[which.min(x)])
+
+# Make a vector of output to send to the outLines list, 
+    # include the number of species with a positive (nSpecies)
+    # the estiamted power
+    # the proportion of times the correct configuration was chosen
+
+    outLines[[i]] <- c(nSpecies, 
+                       correlationsToTest[i], 
+                       sum(Hit_combined<alpha)/length(Hit_combined),
+                       sum(Hit_minP == nSpecies)/length(Hit_combined)
+    )
+  }
+  
+  temp_df <-data.frame( do.call(rbind, outLines) )
+  names( temp_df ) <- c("nSpecies", "Cor", "pMaxPower","nSpeciesPower")
+  return(temp_df)
+}
+```
+
+
+```{r runPowerSims_beta}
+
+## Now lets run the power simulations for the various cases under varying alpha
+
+AllSpeciesComparison_alpha05 <- rbind( calculatePower_beta(1, 0.05),
+                               calculatePower_beta(2, 0.05),
+                               calculatePower_beta(3, 0.05),
+                               calculatePower_beta(4, 0.05),
+                               calculatePower_beta(5, 0.05) )
+AllSpeciesComparison_alpha05$alpha = 0.05
+
+AllSpeciesComparison_alpha01 <- rbind( calculatePower_beta(1, 0.01),
+                                       calculatePower_beta(2, 0.01),
+                                       calculatePower_beta(3, 0.01),
+                                       calculatePower_beta(4, 0.01),
+                                       calculatePower_beta(5, 0.01) )
+AllSpeciesComparison_alpha01$alpha = 0.01
+
+
+AllSpeciesComparison_alpha001 <- rbind( calculatePower_beta(1, 0.001),
+                                       calculatePower_beta(2, 0.001),
+                                       calculatePower_beta(3, 0.001),
+                                       calculatePower_beta(4, 0.001),
+                                       calculatePower_beta(5, 0.001) )
+AllSpeciesComparison_alpha001$alpha = 0.001
+
+# Bring the results together into a nice DF
+AllSpeciesComparison <- rbind( AllSpeciesComparison_alpha05, AllSpeciesComparison_alpha01, AllSpeciesComparison_alpha001)
+# Reformat labels for plotting
+AllSpeciesComparison$alpha <- factor(AllSpeciesComparison$alpha,
+                                     levels = c(0.05, 0.01, 0.001),
+                                     labels = c(expression(alpha*" = 0.05"),
+                                                expression(alpha*" = 0.01"),
+                                                expression(alpha*" = 0.001")))
+
+```
+
+
+```{r plotPower_beta}
+
+ggplot( data = AllSpeciesComparison, aes( x = Cor, y = pMaxPower, col = as.factor(nSpecies)))+
+  geom_line(lwd = 1)+
+  scale_x_continuous("a Parameter of the beta distribution", limits = c(0,20))+
+  scale_y_continuous(expression("Power to to detect gene"), limits = c(0,1))+
+  scale_color_brewer("Number of \nspecies\nwith a true\npositive", palette = "Dark2")+
+  facet_grid(~alpha, labeller = label_parsed)+
+  theme_bw()
+## The plateau at 0.05 is the false positives! The plataeu at ~0.2 for a singleton is something to be discussed
+
+
+ggplot( data = AllSpeciesComparison[AllSpeciesComparison$nSpecies!=1,], aes( x = Cor, y = nSpeciesPower, col = as.factor(nSpecies)))+
+  geom_line(lwd = 1)+
+  scale_x_continuous("a Parameter of the beta distribution", limits = c(0,20))+
+  scale_y_continuous(expression("Proportion of cases where the min p-value is for the right number of species"), limits = c(0,1))+
+  scale_color_brewer("Number of \nspecies\nwith a true\npositive", palette = "Dark2")+
+  geom_hline(aes(yintercept = 0.25), lty = 2)+
+  facet_grid(~alpha, labeller = label_parsed)+
+  theme_bw()
+## The plataeu at 0.25 is the false positives - we will be right 1/4 of the time by chance
+
+```
+
+
+```{r FlowChart_5, echo=FALSE}
+library(DiagrammeR)
+grViz("digraph flowchart {
+      # node definitions with substituted label text
+   
+      node [fontname = Helvetica, shape = rectangle]        
+      tab1 [label = '@@1']
+      tab2 [label = '@@2']
+      tab3 [label = '@@3']
+      tab4 [label = '@@4']
+
+      node [fontname = Helvetica, shape = rectangle, style = filled, fillcolor = tan]        
+      tab5 [label = '@@5']
+
+
+      # edge definitions with the node IDs
+      tab1 -> tab2 -> tab3 -> tab4 -> tab5;
+      }
+
+      tab1 []
+
+      [1]: 'Phase 1: Obtain a specific score for each gene/window in the genome'
+      [2]: 'Phase 2: Within a species, combine information across orthogroups'
+      [3]: 'Phase 3: Across species, compare the evidence that a particular orthogroup is “interesting” '
+      [4]: 'Phase 4: Combine information across all comparisons'
+      [5]: 'Phase 5: A post-hoc comparison of genes/windows'
+      ")
+```
+
+What happens here depends on phases 1 through 4 - that's why it's **post-hoc**. Feel free to go hog-wild. 

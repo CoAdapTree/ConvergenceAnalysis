@@ -1,0 +1,327 @@
+---
+title: "ConvergenceAnalysis"
+author: "Tom Booker"
+date: "31/01/2021"
+output: html_document
+---
+
+## pMax developments
+
+This is just focussing on the pMax adjustments we've made, and comparing it to Fisher's combined probability test. 
+
+## Phase 4
+
+```{r FlowChart_4, echo=FALSE}
+library(DiagrammeR)
+grViz("digraph flowchart {
+      # node definitions with substituted label text
+   
+      node [fontname = Helvetica, shape = rectangle]        
+      tab1 [label = '@@1']
+      tab2 [label = '@@2']
+      tab3 [label = '@@3']
+      tab5 [label = '@@5']
+
+      node [fontname = Helvetica, shape = rectangle, style = filled, fillcolor = tan]        
+      tab4 [label = '@@4']
+
+
+      # edge definitions with the node IDs
+      tab1 -> tab2 -> tab3 -> tab4 -> tab5;
+      }
+  
+      tab1 []
+
+      [1]: 'Phase 1: Obtain a specific score for each gene/window in the genome'
+      [2]: 'Phase 2: Within a species, combine information across orthogroups'
+      [3]: 'Phase 3: Across species, compare the evidence that a particular orthogroup is “interesting” '
+      [4]: 'Phase 4: Combine information across all comparisons'
+      [5]: 'Phase 5: A post-hoc comparison of genes/windows'
+      ")
+```
+
+
+Here are functions to simulate correlated data. Note the difference between the parametric and empirical p-value based approaches. 
+
+For the empirical p approach, we assume that there is a single hit in a genome of 20,000 genes.
+
+``` {r simulateCorrelatedData_functions}
+## Here's a function for simulating correlated data
+
+simulateCorrelation <- function(r, n = 100){
+# r is the population correlation coefficient 
+# x1 is the sample data
+    x1 = rnorm(n)
+# x2 is the data that will be transformed so as to be correlated with x1
+    x2 = rnorm(n)
+
+    Y = r*x1+sqrt(1-r*r)*x2     
+    return( cor.test(Y, x1)$p.value )
+}
+
+
+simulateCorrelation_empirical <- function(r, n = 100, genes = 20000){
+  # r is the population correlation coefficient 
+  # x1 is the sample data
+  x1 = rnorm(n)
+  # x2 is the data that will be transformed so as to be correlated with x1
+  x2 = rnorm(n)
+  
+  Y = r*x1+sqrt(1-r*r)*x2     
+  empricial_p <- rank( c( cor.test(Y, x1)$p.value, runif(genes-1) ) )[1]/genes
+  return( empricial_p )
+}
+
+## Now make the function run in a vectorised fashion 
+simulateCorrelationVectorized_parametric <- Vectorize(simulateCorrelation)
+
+simulateCorrelationVectorized_empirical <- Vectorize(simulateCorrelation_empirical)
+
+# Wrap the function up so that it takes a vector of correlations for each "species"
+# and returns the data in a nice way
+simulateMultipleGEAs <- function(corVector, times, empirical = F){
+  # t is for transpose
+  if (empirical==F){
+      t(replicate(times,  simulateCorrelationVectorized_parametric(corVector, n = 40) )  )
+  }
+  else if (empirical == T){
+          t(replicate(times,  simulateCorrelationVectorized_empirical(corVector, n = 40) )  )
+  }
+}
+
+# Here's the p_jth function
+p_jth <- function(plist,j) {
+  # get the list of the p-value vector
+  k=length(plist)
+  # return an NA if the j parameter is bigger than the length of the p vector
+  if(j>k) {return(NA)}
+  # sort the p-values
+  pjth=sort(plist)[j]
+  # scale the probabilities 
+  prob = if(j<k) (pjth /sort(plist)[j+1]) else max(plist)
+  # perform the test
+  dbinom(x = j, size = j, prob=prob ) 
+}
+
+
+
+## Here's a wrapper function that runs the pMax on the 2, 3, 4 and 5 case. To be used later...
+p_jth_wrapper <- function( correlationSet ){
+  p1th <- apply(correlationSet, 1, function(x) p_jth(x,1))
+  p2th <- apply(correlationSet, 1, function(x) p_jth(x,2))
+  p3th <- apply(correlationSet, 1, function(x) p_jth(x,3))
+  p4th <- apply(correlationSet, 1, function(x) p_jth(x,4))
+  p5th <- apply(correlationSet, 1, function(x) p_jth(x,5))
+
+  return( data.frame(p1 = p1th, p2 = p2th, p3 = p3th, p4 = p4th, p5 = p5th) )
+}
+
+
+p_value_adjustment <- function(p_vec){
+  p_adj = 1 - (1 - min(p_vec))^length(p_vec)
+  return(p_adj)
+      }
+
+
+
+```
+
+
+We know that the pMax yields a flat distribution of pValues. We've shown that before, but here it is again for the parametric p-values and empirical p-values
+
+
+``` {r simulateUnorrelatedData}
+
+## Let's start with a case with no correlation (10000 replicates) 
+## The vector of zeroes is the population correlation for each "species"
+noCorrelationSet_parametric <- simulateMultipleGEAs( c(0.0, 0.0, 0.0, 0.0, 0.0), 10)
+noCorrelationSet_empirical <- simulateMultipleGEAs( c(0.0, 0.0, 0.0, 0.0, 0.0), 10, empirical = T)
+
+## run the procedure using the wrapper function
+noCor_result_parametric  <- p_jth_wrapper( noCorrelationSet_parametric )
+noCor_result_empirical  <- p_jth_wrapper( noCorrelationSet_empirical )
+
+
+## Let's now look at the top hits across the p_j tests
+noCor_combined_parametric <- apply(as.matrix(noCor_result_parametric), 1, p_value_adjustment)
+noCor_combined_empirical <- apply(as.matrix(noCor_result_empirical), 1, p_value_adjustment)
+
+## A nice uniform distribution - that's what we want to see!
+hist(noCor_combined_parametric, main = "Histogram of p-values from pMax (parametric ps as input)")
+hist(noCor_combined_empirical, main = "Histogram of p-values from pMax (empirical ps as input)")
+
+```
+
+On this simulated data, the test is well-behaved and works as it should. 
+
+Now let's assess power for the pMax using empirical ps or parametric ps as input...
+
+
+```{r powerFunctions}
+## This function calculates power across a range of correlation coefficients
+calculatePower <- function( nSpecies, alpha , empirical_pVals = F){
+# Make an empty list to put results in
+#nSpecies = 5
+#alpha = 0.05
+  outLines = list()
+# make a list of correlation coefficients you want to test
+  correlationsToTest <-  c(0.05,1:8/10)
+  
+# loop over the correlation list
+  for (i in seq(length(correlationsToTest) )){
+# print out the current config - good for keeping track - not good for RMarkdown
+ #     print(c(rep(correlationsToTest[i],nSpecies),rep(0,5 - nSpecies)) )
+# Here we simulate the p-values for the appropriate correlation matrix
+    HitSet <- simulateMultipleGEAs( c(rep(correlationsToTest[i],nSpecies),rep(0,5 - nSpecies)), 100, empirical = empirical_pVals)
+
+# Now we run the p_jth on the simulated data
+    Hit_result  <- p_jth_wrapper( HitSet )
+    
+# Now get a single p-value for each simulation
+    Hit_combined <- apply(as.matrix(Hit_result), 1, p_value_adjustment)
+
+# For each simulation, see which convergence configuration the minimum p corresponds to    
+    Hit_minP <- apply(as.matrix(Hit_result), 1, function(x) c(1:5)[which.min(x)]) * (Hit_combined<alpha)
+    Hit_minP <-   Hit_minP[  Hit_minP != 0]
+# Make a vector of output to send to the outLines list, 
+    # include the number of species with a positive (nSpecies)
+    # the estiamted power
+    # the proportion of times the correct configuration was chosen
+
+    outLines[[i]] <- c(nSpecies, 
+                       correlationsToTest[i], 
+                       sum(Hit_combined<alpha)/length(Hit_combined),
+                       sum(Hit_minP == nSpecies)/length(Hit_minP)
+    )
+  }
+  
+  temp_df <-data.frame( do.call(rbind, outLines) )
+  names( temp_df ) <- c("nSpecies", "Cor", "pMaxPower","nSpeciesPower")
+  return(temp_df)
+}
+```
+
+
+```{r runPowerSims_parametric}
+
+## Now lets run the power simulations for the various cases under varying alpha
+
+AllSpeciesComparison_alpha05_parametric <- rbind( calculatePower(1, 0.05),
+                               calculatePower(2, 0.05),
+                               calculatePower(3, 0.05),
+                               calculatePower(4, 0.05),
+                               calculatePower(5, 0.05) )
+AllSpeciesComparison_alpha05_parametric$alpha = 0.05
+
+AllSpeciesComparison_alpha01_parametric <- rbind( calculatePower(1, 0.01),
+                                       calculatePower(2, 0.01),
+                                       calculatePower(3, 0.01),
+                                       calculatePower(4, 0.01),
+                                       calculatePower(5, 0.01) )
+AllSpeciesComparison_alpha01_parametric$alpha = 0.01
+
+
+AllSpeciesComparison_alpha001_parametric <- rbind( calculatePower(1, 0.001),
+                                       calculatePower(2, 0.001),
+                                       calculatePower(3, 0.001),
+                                       calculatePower(4, 0.001),
+                                       calculatePower(5, 0.001) )
+AllSpeciesComparison_alpha001_parametric$alpha = 0.001
+
+# Bring the results together into a nice DF
+AllSpeciesComparison_parametric <- rbind( AllSpeciesComparison_alpha05_parametric, AllSpeciesComparison_alpha01_parametric, AllSpeciesComparison_alpha001_parametric)
+# Reformat labels for plotting
+AllSpeciesComparison_parametric$alpha <- factor(AllSpeciesComparison_parametric$alpha,
+                                     levels = c(0.05, 0.01, 0.001),
+                                     labels = c(expression(alpha*" = 0.05"),
+                                                expression(alpha*" = 0.01"),
+                                                expression(alpha*" = 0.001")))
+
+AllSpeciesComparison_parametric$source <- "parametric"
+
+```
+
+
+```{r runPowerSims_empirical}
+
+## Now lets run the power simulations for the various cases under varying alpha
+
+AllSpeciesComparison_alpha05_empirical <- rbind( calculatePower(1, 0.05, empirical = T),
+                               calculatePower(2, 0.05, empirical = T),
+                               calculatePower(3, 0.05, empirical = T),
+                               calculatePower(4, 0.05, empirical = T),
+                               calculatePower(5, 0.05, empirical = T) )
+AllSpeciesComparison_alpha05_empirical$alpha = 0.05
+
+AllSpeciesComparison_alpha01_empirical <- rbind( calculatePower(1, 0.01, empirical = T),
+                                       calculatePower(2, 0.01, empirical = T),
+                                       calculatePower(3, 0.01, empirical = T),
+                                       calculatePower(4, 0.01, empirical = T),
+                                       calculatePower(5, 0.01, empirical = T) )
+AllSpeciesComparison_alpha01_empirical$alpha = 0.01
+
+
+AllSpeciesComparison_alpha001_empirical <- rbind( calculatePower(1, 0.001, empirical = T),
+                                       calculatePower(2, 0.001, empirical = T),
+                                       calculatePower(3, 0.001, empirical = T),
+                                       calculatePower(4, 0.001, empirical = T),
+                                       calculatePower(5, 0.001, empirical = T) )
+AllSpeciesComparison_alpha001_empirical$alpha = 0.001
+
+# Bring the results together into a nice DF
+AllSpeciesComparison_empirical <- rbind( AllSpeciesComparison_alpha05_empirical, AllSpeciesComparison_alpha01_empirical, AllSpeciesComparison_alpha001_empirical)
+# Reformat labels for plotting
+AllSpeciesComparison_empirical$alpha <- factor(AllSpeciesComparison_empirical$alpha,
+                                     levels = c(0.05, 0.01, 0.001),
+                                     labels = c(expression(alpha*" = 0.05"),
+                                                expression(alpha*" = 0.01"),
+                                                expression(alpha*" = 0.001")))
+
+AllSpeciesComparison_empirical$source <- "empirical"
+```
+
+
+```{r plotPower_parametric}
+AllSpeciesComparison <- rbind( AllSpeciesComparison_parametric, AllSpeciesComparison_empirical)
+
+AllSpeciesComparison$source <- factor(AllSpeciesComparison$source,
+                                     levels = c("parametric","empirical"),
+                                     labels = c(expression(""*"Parametric pvalue"),
+                                                expression(""*"Empirical pvalue")))
+
+library(ggplot2)
+
+ggplot( data = AllSpeciesComparison, aes( x = Cor, y = pMaxPower, col = as.factor(nSpecies)))+
+  geom_line(lwd = 1)+
+  scale_x_continuous("Population Correlation Coefficient for True Positives", limits = c(0,1))+
+  scale_y_continuous(expression("Power to to detect gene"), limits = c(0,1))+
+  scale_color_brewer("Number of \nspecies\nwith a true\npositive", palette = "Dark2")+
+  facet_grid(source~alpha, labeller = label_parsed)+
+  theme_bw()
+## The plateau at 0.05 is the false positives! The plataeu at ~0.2 for a singleton is something to be discussed
+
+
+ggplot( data = AllSpeciesComparison, aes( x = Cor, y = nSpeciesPower, col = as.factor(nSpecies)))+
+  geom_line(lwd = 1)+
+  scale_x_continuous("Population Correlation Coefficient for True Positives", limits = c(0,1))+
+  scale_y_continuous(expression("Proportion of cases where the min p-value is for the right number of species"), limits = c(0,1))+
+  scale_color_brewer("Number of \nspecies\nwith a true\npositive", palette = "Dark2")+
+  geom_hline(aes(yintercept = 0.2), lty = 2)+
+  facet_grid(source~alpha, labeller = label_parsed)+
+  theme_bw()
+## The plataeu at 0.2 is the false positives - we will be right 1/5 of the time by chance
+
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+knitr::knit_exit()
+```

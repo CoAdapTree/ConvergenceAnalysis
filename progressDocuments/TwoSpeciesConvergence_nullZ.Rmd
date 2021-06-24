@@ -1,0 +1,119 @@
+---
+title: "Two Way Convergence - null-Z approach"
+author: "Tom Booker"
+date: "07/05/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Two Way Convergence
+
+We're interested in quantifying the extent of convergence between pairs of species in the CoAdapTree project. 
+
+We have 3 potential approaches for analysing 2-way convergence:
+
+1. The Null-Z test (the Null-W test, but with WZA scores) (**asymmetric**)
+2. A pMax style approach, what is the larger of the two p-values, is that smaller than you’d expect based on order statistic thinking (**symmetric**)
+3. A contingency table approach, where you ask if the proportion of overlapping hits between two species is larger than you’d expect by chance (**symmetric**)
+
+
+By **symmetric/asymmetric** I'm referring to a test that is dependant on the configuration of species that you put in. The null-W test is **assymetric** because the result depends on which species you put into the test first. 
+
+For the purposes of this document, I'll refer to Species A and Species B. These tests assume that you have some way of ranking 
+
+## 1. The null-Z approach
+
+This test is straightforward to run directly on the WZA data.
+
+Let's simulate data under the null:
+
+```{r simulateUnderTheNull}
+
+twoSpeciesData <- cbind( sample(20000)/20000,
+                        sample(20000)/20000)
+
+head(twoSpeciesData)
+```
+Let's grab the indices of the top 5% in both cases
+
+
+```{r getReciprocalHits}
+
+twoSpeciesData_SA_hits <- twoSpeciesData[,1] < quantile(twoSpeciesData[,1],0.05)
+twoSpeciesData_SB_hits <- twoSpeciesData[,2] < quantile(twoSpeciesData[,2],0.05)
+
+SA_hits_in_SB <- twoSpeciesData[,2][ twoSpeciesData_SA_hits ]
+SB_hits_in_SA <- twoSpeciesData[,1][ twoSpeciesData_SB_hits ]
+
+hist(SA_hits_in_SB)
+hist(SB_hits_in_SA)
+
+library(qvalue)
+hist(qvalue(SA_hits_in_SB))
+hist(qvalue(SB_hits_in_SA))
+```
+
+## Test using WZA sims
+
+```{R simData}
+
+cline <- read.csv("~/UBC/GEA/Convergence/WZA_results_for_testing/analysisFiles_s0.003/cline_sampled.WZA.csv")
+cline_Stripped <- cline[,c(13,7,16,23, 24)]
+cline_Stripped$POS <- round(cline_Stripped$position/10000)*10000 + cline_Stripped$rep*20e6
+cline_Stripped$p <- 1 - rank(cline_Stripped$empR_Z)/length(cline_Stripped$empR_Z) 
+
+BC <- read.csv("~/UBC/GEA/Convergence/WZA_results_for_testing/analysisFiles_s0.003/BC_Map_sampled.WZA.csv")
+BC_Stripped <- BC[,c(13,7,16,23, 24)]
+BC_Stripped$POS <- round(BC_Stripped$position/10000)*10000 + BC_Stripped$rep*20e6
+BC_Stripped$p <- 1 - rank(BC_Stripped$empR_Z)/length(BC_Stripped$empR_Z) 
+
+names (cline_Stripped) <- paste( "A", names(cline_Stripped), sep = "_")
+names (BC_Stripped) <- paste( "B", names(BC_Stripped), sep = "_")
+
+testDF <- merge(cline_Stripped, BC_Stripped,
+      by.x = c("A_POS"),
+      by.y = c("B_POS"))
+
+
+library(ggplot2)
+
+## For plotting
+BC$map <- "BC"
+BC$POS <- round(BC$position/10000)*10000 + BC$rep*20e6
+
+cline$map <- "cline"
+cline$POS <- round(cline$position/10000)*10000 + cline$rep*20e6
+
+plot_DF <- rbind( BC, cline)
+
+ggplot(data =plot_DF, aes(x = POS, y = empR_Z, col = LA > 0.005))+
+  geom_point()+
+  facet_grid(map~.)
+
+true_Hits <- testDF[ (testDF$A_LA > 0.005)&(testDF$B_LA > 0.005) ,]
+
+## Let's look at the top 5%
+testDF_SA_hits <- testDF$A_p < 0.05
+testDF_SB_hits <- testDF$B_p < 0.05
+
+# Grab the reciprocal top 5% hits
+SA_hits_in_SB <- testDF[ testDF_SA_hits ,]
+SB_hits_in_SA <- testDF[ testDF_SB_hits ,]
+
+# Plot it out
+hist(qvalue(SB_hits_in_SA$A_p))
+hist(qvalue(SA_hits_in_SB$B_p))
+
+# How many true positives were there?
+nrow(true_Hits)
+
+# How many of the true positives did we detect?
+sum(true_Hits$A_POS %in% SA_hits_in_SB$A_POS)
+sum(true_Hits$A_POS %in% SB_hits_in_SA$A_POS)
+
+```
+
+
